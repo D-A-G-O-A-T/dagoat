@@ -230,14 +230,42 @@ mod tests {
     /// Serialize tests that might touch process-global env / worker discovery.
     static ISO_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Locate (or build) `goat-worker` for isolation probes.
+    ///
+    /// Prefer a *valid* `GOAT_WORKER_PATH` (CI sets this). Do **not** clear a good override.
+    /// If the binary is missing, run `cargo build --bin goat-worker` once under the lock so
+    /// plain `cargo test` works without a separate pre-build step.
     fn worker() -> PathBuf {
         let _g = ISO_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Ensure we don't inherit a bad override from another test.
-        std::env::remove_var("GOAT_WORKER_PATH");
+
+        if let Ok(p) = std::env::var("GOAT_WORKER_PATH") {
+            let path = PathBuf::from(&p);
+            if path.is_file() {
+                return path;
+            }
+            // Stale/bad override (e.g. left by exclusive-override test) — clear and rediscover.
+            std::env::remove_var("GOAT_WORKER_PATH");
+        }
+
+        if let IsolationStatus::Available { worker_path } = check_isolation() {
+            return worker_path;
+        }
+
+        let cargo = option_env!("CARGO").unwrap_or("cargo");
+        let status = Command::new(cargo)
+            .args(["build", "--bin", "goat-worker"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .unwrap_or_else(|e| panic!("failed to spawn `{cargo} build --bin goat-worker`: {e}"));
+        assert!(
+            status.success(),
+            "`{cargo} build --bin goat-worker` failed with {status}"
+        );
+
         match check_isolation() {
             IsolationStatus::Available { worker_path } => worker_path,
             IsolationStatus::Unavailable { reason } => {
-                panic!("goat-worker required for isolation tests: {reason}");
+                panic!("goat-worker required for isolation tests after build: {reason}");
             }
         }
     }
