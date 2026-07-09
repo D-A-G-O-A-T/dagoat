@@ -28,12 +28,21 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: clippy (no-default-features)
         run: cargo clippy --no-default-features --all-targets -- -D warnings
+      # Isolation tests spawn the real `goat-worker` binary (not linked into the test harness).
+      - name: build goat-worker (isolation harness)
+        run: cargo build --bin goat-worker
       - name: test (default)
         run: cargo test
+        env:
+          GOAT_WORKER_PATH: ${{ github.workspace }}/target/debug/goat-worker
+      - name: build goat-worker (no-default-features)
+        run: cargo build --no-default-features --bin goat-worker
       - name: test (no-default-features)
         run: cargo test --no-default-features
-      - name: build release goatd
-        run: cargo build --release --bin goatd
+        env:
+          GOAT_WORKER_PATH: ${{ github.workspace }}/target/debug/goat-worker
+      - name: build release goatd + goat-worker
+        run: cargo build --release --bin goatd --bin goat-worker
 
   cargo-audit:
     runs-on: ubuntu-latest
