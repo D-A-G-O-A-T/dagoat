@@ -1,0 +1,10 @@
+[package]
+name = "goat-neutrality"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Neutrality auditor: scans the protocol layer for device-type identifiers and content-policy tokens (the standing design test, enforced in CI)."
+
+[[bin]]
+name = "goat-neutrality"
+path = "src/main.rs"

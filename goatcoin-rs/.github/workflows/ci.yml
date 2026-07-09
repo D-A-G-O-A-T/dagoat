@@ -1,0 +1,43 @@
+name: goatcoin-rs CI
+
+# WP-0.5 merge gates. The neutrality auditor and D.1 conformance are BLOCKING:
+# a device-type identifier or content-policy token in the protocol layer, or any
+# conformance failure, fails the build. This is how the standing design test
+# ("if it names a device type, it's wrong") and Core Principle 7 are enforced in code.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: goatcoin-rs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain (stable + rustfmt + clippy)
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt clippy
+          rustup default stable
+
+      - name: Format gate
+        run: cargo fmt --all -- --check
+
+      - name: Clippy gate (warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Neutrality gate (all protocol-layer crates; no device type / no content logic)
+        run: cargo run -p goat-neutrality -- crates/goat-protocol/src crates/goat-ledger/src crates/goat-net/src
+
+      - name: Test gate (parity oracle + conformance + fraud proofs + HLL reproducibility)
+        run: cargo test --workspace
+
+      - name: Build (release)
+        run: cargo build --workspace --release

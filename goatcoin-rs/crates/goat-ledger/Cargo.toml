@@ -1,0 +1,14 @@
+[package]
+name = "goat-ledger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GoatCoin (GOAT) MVP-1 minimal mechanism ledger — beacon, accumulator roots, bonds, slashing, and the fraud-proof adjudication loop. Device-agnostic (passes the neutrality gate). Permissioned/simulated for the testnet MVP."
+
+[dependencies]
+goat-protocol = { path = "../goat-protocol" }
+sha3.workspace = true
+
+[[bin]]
+name = "goat-mvp1-demo"
+path = "src/bin/demo.rs"

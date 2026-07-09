@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/goat-protocol",
+    "crates/goat-backends",
+    "crates/goat-neutrality",
+    "crates/goat-ledger",
+    "crates/goat-net",
+]
+
+# Layer boundary is a compile-time property:
+#   * goat-protocol   depends on NO other workspace crate (device-agnostic core).
+#   * goat-backends   depends on goat-protocol (implements the trait, below the line).
+#   * goat-neutrality is a standalone auditor binary; depends on nothing.
+# A protocol module physically cannot `use goat_backends::...` because the dependency
+# does not exist in its manifest. This is WP-0.1's enforcement mechanism.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+sha3 = "0.10"
+ml-dsa = "0.1.1"

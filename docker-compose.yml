@@ -1,0 +1,132 @@
+name: goatcoin-testnet
+
+# A 5-node local GoatCoin testnet on an isolated Docker bridge. Every node runs the same image and
+# binds 0.0.0.0:4646/udp inside its own network namespace; the host reaches each node on a distinct
+# UDP port (4640–4644). On the bridge, nodes address each other by service name via Docker DNS. The
+# daemon parses its CLI (`--listen` / `--bootstrap-peer` / `--seed` / `--throttle-target`), loads the
+# mounted genesis, and forms the signed post-quantum gossip mesh (AR82–AR85).
+#
+# ── Alpha Pilot hardening (AR86) ─────────────────────────────────────────────
+# The `x-goatd` anchor below applies OS-level power + security controls to EVERY node:
+#   • Power   — `deploy.resources.limits.cpus = ${GOATD_CPU_LIMIT:-1.0}`: a real cgroups-v2 CPU quota
+#               (set it in `.env`; see ALPHA_PILOT.md). The daemon LOGS the value; it never
+#               self-throttles the consensus loop.
+#   • Security — non-root user + read-only root filesystem + all kernel capabilities dropped +
+#               no-new-privileges, so a node can touch nothing on the host beyond its bridge socket
+#               and the read-only genesis mount.
+
+networks:
+  goatnet:
+    name: goatnet
+    driver: bridge
+
+# Shared definition (build, image, restart, power, security, network, config mount) for all 5 nodes.
+x-goatd: &goatd
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: goatcoin/goatd:1.0
+  restart: unless-stopped
+
+  # ── Deliverable 1: OS-level power control (cgroups v2 CPU quota) ──
+  # A hard CPU ceiling enforced by the kernel — this is what actually caps heat / fan noise. Set
+  # GOATD_CPU_LIMIT in .env (decimal cores, e.g. 0.5 = half a core). Default 1.0 = one full core.
+  deploy:
+    resources:
+      limits:
+        cpus: "${GOATD_CPU_LIMIT:-1.0}"
+
+  # ── Deliverable 2: hardened container security boundary ──
+  user: "10001:10001"                      # the unprivileged `goat` user baked into the image
+  read_only: true                          # immutable root filesystem — the daemon writes nothing
+  tmpfs: ["/tmp"]                           # small ephemeral (RAM) scratch, so read_only is safe
+  cap_drop: ["ALL"]                         # strip every Linux kernel capability
+  security_opt: ["no-new-privileges:true"] # a process can never escalate via setuid/setgid
+
+  networks: [goatnet]
+  volumes:
+    - ./genesis.json:/etc/goatd/genesis.json:ro   # read-only genesis, loaded at boot
+    # Per-node identity keys would be mounted here in production (see MIGRATION.md §4), e.g.:
+    #   - ./keys/node-0/node_secret:/etc/goatd/node_secret:ro   # chmod 600, never baked into the image
+    #   - ./keys/node-0/signing_seed → GOATD_SIGNING_SEED (identity-hardening Alpha path)
+
+  # Lab-only: bind is 0.0.0.0 (non-loopback). Deterministic testnet signing seeds require an
+  # explicit opt-in (identity-hardening). For Alpha / off-host, remove this and set GOATD_SIGNING_SEED.
+  environment: &goat_env
+    GOATD_ALLOW_TESTNET_SEEDS: "1"
+
+services:
+  node-0:
+    <<: *goatd
+    container_name: goat-node-0
+    hostname: node-0
+    ports:
+      - "4640:4646/udp"
+    environment:
+      <<: *goat_env
+      GOATD_NODE_ID: "0"
+      GOATD_GENESIS: /etc/goatd/genesis.json
+      # Per-node cookie secret (P3, fail-closed). DEV/TEST value — distinct per node, never a
+      # production secret. Production mounts a real secret (see MIGRATION.md §5).
+      GOATD_NODE_SECRET: "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+    command: ["--listen=0.0.0.0:4646", "--seed", "--node-index=0", "--throttle-target=${GOATD_CPU_LIMIT:-1.0}"]
+
+  node-1:
+    <<: *goatd
+    container_name: goat-node-1
+    hostname: node-1
+    depends_on: [node-0]
+    ports:
+      - "4641:4646/udp"
+    environment:
+      <<: *goat_env
+      GOATD_NODE_ID: "1"
+      GOATD_GENESIS: /etc/goatd/genesis.json
+      GOATD_BOOTSTRAP: node-0:4646
+      GOATD_NODE_SECRET: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    command: ["--listen=0.0.0.0:4646", "--bootstrap-peer=node-0:4646", "--node-index=1", "--throttle-target=${GOATD_CPU_LIMIT:-1.0}"]
+
+  node-2:
+    <<: *goatd
+    container_name: goat-node-2
+    hostname: node-2
+    depends_on: [node-0]
+    ports:
+      - "4642:4646/udp"
+    environment:
+      <<: *goat_env
+      GOATD_NODE_ID: "2"
+      GOATD_GENESIS: /etc/goatd/genesis.json
+      GOATD_BOOTSTRAP: node-0:4646
+      GOATD_NODE_SECRET: "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+    command: ["--listen=0.0.0.0:4646", "--bootstrap-peer=node-0:4646", "--node-index=2", "--throttle-target=${GOATD_CPU_LIMIT:-1.0}"]
+
+  node-3:
+    <<: *goatd
+    container_name: goat-node-3
+    hostname: node-3
+    depends_on: [node-0]
+    ports:
+      - "4643:4646/udp"
+    environment:
+      <<: *goat_env
+      GOATD_NODE_ID: "3"
+      GOATD_GENESIS: /etc/goatd/genesis.json
+      GOATD_BOOTSTRAP: node-0:4646
+      GOATD_NODE_SECRET: "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"
+    command: ["--listen=0.0.0.0:4646", "--bootstrap-peer=node-0:4646", "--node-index=3", "--throttle-target=${GOATD_CPU_LIMIT:-1.0}"]
+
+  node-4:
+    <<: *goatd
+    container_name: goat-node-4
+    hostname: node-4
+    depends_on: [node-0]
+    ports:
+      - "4644:4646/udp"
+    environment:
+      <<: *goat_env
+      GOATD_NODE_ID: "4"
+      GOATD_GENESIS: /etc/goatd/genesis.json
+      GOATD_BOOTSTRAP: node-0:4646
+      GOATD_NODE_SECRET: "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4"
+    command: ["--listen=0.0.0.0:4646", "--bootstrap-peer=node-0:4646", "--node-index=4", "--throttle-target=${GOATD_CPU_LIMIT:-1.0}"]

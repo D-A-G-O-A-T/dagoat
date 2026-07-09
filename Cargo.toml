@@ -1,0 +1,55 @@
+[package]
+name = "goat-core"
+version = "1.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "GoatCoin (GOAT) V1.0 — the sealed #![no_std] core and the goatd async daemon."
+# Explicit bins only — `host_crypto.rs` is a module of goatd, not a binary target.
+autobins = false
+
+# Standalone workspace root: keeps this package independent of the goatcoin-rs/ MVP workspace.
+[workspace]
+
+[lib]
+name = "goat_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "goatd"
+path = "src/bin/goatd.rs"
+
+[features]
+# `alloc` enables the heap-backed mirrors in the sealed core.
+# Network domain (RECON-15): default build binds the TESTNET chain id; `mainnet` opts into mainnet.
+# The daemon refuses to boot if genesis.json declares a different chain than the compiled one (P4).
+default = ["alloc"]
+alloc = []
+mainnet = []
+
+[dependencies]
+# Runtime deps are used ONLY by the `goatd` binary; the #![no_std] library never touches them.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+serde = { version = "1", features = ["derive"] }   # genesis.json struct deserialization
+serde_json = "1"                                    # genesis.json parsing
+# Track C host crypto (DEPLOY.md backend swap) — same crates as goatcoin-rs C3 oracle:
+ml-dsa = "0.1.1"                                    # FIPS 204 ML-DSA-65
+ml-kem = { version = "0.3.2", features = ["getrandom"] }  # FIPS 203 ML-KEM-768
+aes-gcm = "0.11.0"                                  # AES-256-GCM AEAD
+sha3 = "0.10"                                       # session KDF (SHA3-256)
+getrandom = "0.3"                                   # goat-keygen random seeds (identity-hardening)
+
+[[bin]]
+name = "goat-keygen"
+path = "src/bin/goat_keygen.rs"
+
+# execution-isolation: short-lived payload worker (spawned by isolation supervisor; not a network daemon).
+[[bin]]
+name = "goat-worker"
+path = "src/bin/goat_worker.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+# reassembly-hardening / M1: arithmetic overflow fails loud in release (panic-free posture > silent mask).
+overflow-checks = true

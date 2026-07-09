@@ -1,0 +1,61 @@
+# Phase-0 P0-3 + supply-chain: single CI story for the deploy spine.
+# Runs on every PR/push. Advisory check uses cargo-audit when installed (continue-on-error
+# until the first clean baseline is established on the runner).
+
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  goat-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy (default / alloc)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: clippy (no-default-features)
+        run: cargo clippy --no-default-features --all-targets -- -D warnings
+      - name: test (default)
+        run: cargo test
+      - name: test (no-default-features)
+        run: cargo test --no-default-features
+      - name: build release goatd
+        run: cargo build --release --bin goatd
+
+  cargo-audit:
+    runs-on: ubuntu-latest
+    # MTU-chunking (O4): baseline triage was clean (0 advisories on locked graph) → hard-fail.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: cargo audit (hard-fail)
+        run: cargo audit
+        # Requires committed Cargo.lock (load-bearing for Docker --locked builds).
+
+  # Optional goatcoin-rs workspace (oracle tree) — fails soft if path missing in sparse checkouts.
+  goatcoin-rs:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: goatcoin-rs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: test goatcoin-rs
+        run: cargo test --workspace

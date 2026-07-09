@@ -1,0 +1,87 @@
+﻿# Build
+/target/
+goatcoin-rs/target/
+**/target/
+desktop/src-tauri/target/
+dist/
+build/
+*.exe
+*.pdb
+*.dll
+*.so
+*.dylib
+*.o
+*.a
+*.rlib
+*.rmeta
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+keys/
+**/node_secret
+**/*_secret
+**/*.pem
+**/*.key
+secrets/
+
+# IDE / OS / agent local
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+.claude/
+
+# Logs
+*.log
+livestats.json
+*.tmp
+*.bak
+
+# Internal AI session dumps (never ship)
+AI respond/
+
+# Internal strategy / BD war room — never publish
+Council/
+
+
+# Internal eng notes — keep private (not product surface)
+RECON-05mitigation.md
+SECURITY_QUICKFIXES.md
+POST_MVP_ROADMAP.md
+goatd-Cargo.toml.reference
+Critical Concern*.md
+GoatCoin_Memory.md
+GoatCoin_Project_Handover.md
+GPUCoin_Prompts.md
+FIRST_PROMPT_TO_USE.md
+05_Prompt_Pack.md
+09_Original_Prompts_Reference.md
+
+# More internal-only docs
+PUBLISH_CHECKLIST.md
+**/CONTENT_FILTER_GUIDELINES.md
+**/ACCESSIBILITY.md
+
+# Guidance-pack / strategy docs (live in private working tree only)
+01_Vision_Golden_Goal.md
+02_Core_Principles.md
+03_Architecture_Guidelines.md
+04_Anti_Monopolization_Strategy.md
+05_Prompt_Pack.md
+06_Project_Structure.md
+07_Tokenomics_Framework.md
+08_Roadmap.md
+START_HERE.md
+DOC_INDEX.md
+09_Original_Prompts_Reference.md
+CLAUDE.md

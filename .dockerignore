@@ -1,0 +1,16 @@
+# Keep the Docker build context tiny: the Dockerfile only needs Cargo.toml, Cargo.lock, and src/.
+# Everything else (build artifacts, the separate MVP workspace, docs, sims, VCS) is excluded.
+
+target/
+**/target/
+goatcoin-rs/
+reference/
+.git/
+.github/
+
+# Docs, design record, simulations, and scratch — not needed to build the binary.
+# (genesis.json is a runtime bind mount in docker-compose.yml, not baked into the image.)
+*.md
+*.py
+*.json
+goatd-Cargo.toml.reference

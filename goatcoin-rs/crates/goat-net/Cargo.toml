@@ -1,0 +1,28 @@
+[package]
+name = "goat-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GoatCoin (GOAT) MVP-2 distributed verification — PQ-authenticated transport (ML-KEM-768 + AES-GCM), orchestrator with executor-set spread, beacon-seeded lottery C-selection, and the distributed verification loop. Device-agnostic (passes the neutrality gate)."
+
+[dependencies]
+goat-protocol = { path = "../goat-protocol" }
+goat-ledger = { path = "../goat-ledger" }
+sha3.workspace = true
+ml-kem = { version = "0.3.2", features = ["getrandom"] }
+aes-gcm = "0.11.0"
+
+[dev-dependencies]
+goat-backends = { path = "../goat-backends" }
+
+[[bin]]
+name = "goat-mvp2-demo"
+path = "src/bin/demo.rs"
+
+[[bin]]
+name = "goat-mvp3-demo"
+path = "src/bin/demo3.rs"
+
+[[bin]]
+name = "goat-collect"
+path = "src/bin/collect.rs"

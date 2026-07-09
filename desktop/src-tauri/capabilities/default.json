@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the D.A. G.O.A.T. main window: run core APIs and manage the goatd sidecar (execute + kill).",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/goatd",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    "shell:allow-kill"
+  ]
+}
