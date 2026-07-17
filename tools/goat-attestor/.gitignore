@@ -1,0 +1,6 @@
+/target
+.env
+state/
+evidence/
+registry.json
+relayer-*.txt
