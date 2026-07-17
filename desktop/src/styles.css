@@ -1,0 +1,1039 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px 28px 40px;
+  color: #e9e9ee;
+  background: #16161a;
+  min-height: 100vh;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo {
+  font-size: 26px;
+}
+
+h1 {
+  font-size: 22px;
+  margin: 0;
+  letter-spacing: 0.2px;
+}
+
+.subtitle {
+  margin: 0;
+  color: #8b8b93;
+  font-size: 12.5px;
+}
+
+/* Contribute mode A/B toggle — public good only (default) vs +GOAT pilot */
+.mode-toggle {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 12px 0 0;
+}
+
+.mode-toggle__btn {
+  appearance: none;
+  border: 1px solid #2a2a31;
+  background: #1c1c21;
+  color: #8b8b93;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.mode-toggle__btn:hover {
+  color: #d6d6dd;
+}
+
+.mode-toggle__btn.active {
+  color: #16161a;
+  background: #3ecf8e;
+  border-color: #3ecf8e;
+}
+
+.mode-gate-note {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border: 1px solid #3a3a42;
+  border-radius: 10px;
+  background: #1a1a20;
+  color: #b9b9c2;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.contribute-lede {
+  margin: -4px 0 0;
+  max-width: 70ch;
+  line-height: 1.5;
+}
+
+.contribute-primary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 12px 0;
+}
+
+.primary-cta {
+  appearance: none;
+  border: 1px solid #3ecf8e;
+  background: #3ecf8e;
+  color: #16161a;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 700;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.primary-cta:hover {
+  filter: brightness(1.05);
+}
+
+.primary-cta:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: none;
+}
+
+.contribute-primary button:not(.primary-cta) {
+  appearance: none;
+  border: 1px solid #3ecf8e;
+  background: transparent;
+  color: #3ecf8e;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.contribute-primary button:not(.primary-cta):hover {
+  background: rgba(62, 207, 142, 0.12);
+}
+
+.contribute-primary button:not(.primary-cta):disabled {
+  border-color: #3a3a42;
+  color: #5c5c66;
+  cursor: not-allowed;
+  background: none;
+}
+
+.btn-pause {
+  border-color: #d9a441 !important;
+  color: #d9a441 !important;
+}
+
+.btn-finish {
+  border-color: #e5484d !important;
+  color: #e5484d !important;
+}
+
+.contribute-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 20px;
+  align-items: start;
+  margin-top: 12px;
+}
+
+@media (max-width: 960px) {
+  .contribute-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.contribute-main {
+  min-width: 0;
+}
+
+.fah-preview {
+  position: sticky;
+  top: 12px;
+  border: 1px solid #2a2a32;
+  border-radius: 12px;
+  background: #1c1c22;
+  padding: 12px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fah-preview__header h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.fah-preview__canvas {
+  width: 100%;
+  height: 280px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0b1220;
+  border: 1px solid #2a2a32;
+}
+
+.fah-preview__canvas canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.fah-preview__meta {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.fah-preview__project {
+  margin-top: 8px;
+  max-height: 200px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.fah-preview__cause {
+  margin: 0 0 4px;
+  font-weight: 600;
+  color: #3ecf8e;
+  text-transform: capitalize;
+}
+
+.fah-preview__desc {
+  font-size: 12px;
+  color: #b0b0b8;
+  line-height: 1.4;
+}
+
+.fah-preview__desc p {
+  margin: 0 0 8px;
+}
+
+.fah-preview__progress-line {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+
+.fah-preview__id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: #6a6a74;
+  word-break: break-all;
+  margin: 2px 0 6px;
+}
+
+.fah-unit-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  word-break: break-all;
+  margin: 4px 0 0;
+  opacity: 0.75;
+}
+
+.progress-row {
+  margin-bottom: 12px;
+}
+
+.advanced-controls {
+  margin-top: 8px;
+}
+
+/* Minimal external-attach affordance — a folded-away "already run FAH yourself?" section. */
+.advanced-attach {
+  margin-top: 12px;
+  border-top: 1px solid #2a2a30;
+  padding-top: 10px;
+}
+
+.advanced-attach > summary {
+  cursor: pointer;
+  color: #8a8a94;
+  font-size: 13px;
+}
+
+.advanced-attach > p {
+  margin: 8px 0;
+}
+
+/* Subtext under the Stop control — states the finish-first, protect-the-science guarantee. */
+.control-subtext {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.autoconfig-note {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+/* Honesty banner — persistent, non-dismissible. Do not add a close button. */
+.honesty-banner {
+  margin: 16px 0 22px;
+  padding: 12px 16px;
+  border: 1px solid #4a3a15;
+  border-radius: 10px;
+  background: #221c0f;
+  color: #e8cf8a;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid #2a2a31;
+}
+
+.tab {
+  appearance: none;
+  border: none;
+  background: none;
+  color: #8b8b93;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.tab:hover {
+  color: #d6d6dd;
+}
+
+.tab.active {
+  color: #3ecf8e;
+  border-bottom-color: #3ecf8e;
+}
+
+.tab-content {
+  padding-top: 22px;
+}
+
+.tab-panel {
+  border: 1px solid #2a2a31;
+  border-radius: 14px;
+  background: #1c1c21;
+  padding: 22px 24px;
+}
+
+.tab-panel h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.placeholder-note {
+  margin: 0;
+  color: #b9b9c2;
+  font-size: 13.5px;
+  line-height: 1.6;
+  max-width: 62ch;
+}
+
+.ipc-check {
+  margin: 18px 0 0;
+  font-size: 12px;
+  color: #7c7c85;
+}
+
+.ipc-check code {
+  color: #9fd8bd;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Network switch — anvil | Base Sepolia only, never mainnet. */
+.network-switch {
+  display: flex;
+  gap: 6px;
+}
+
+.network-switch__btn {
+  appearance: none;
+  border: 1px solid #2a2a31;
+  background: #1c1c21;
+  color: #8b8b93;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.network-switch__btn:hover {
+  color: #d6d6dd;
+}
+
+.network-switch__btn.active {
+  color: #16161a;
+  background: #3ecf8e;
+  border-color: #3ecf8e;
+}
+
+/* Wallet tab */
+.wallet-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.wallet-section {
+  border-top: 1px solid #2a2a31;
+  padding-top: 18px;
+}
+
+.wallet-section:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.wallet-section h3 {
+  margin: 0 0 10px;
+  font-size: 14.5px;
+  color: #e9e9ee;
+}
+
+.wallet-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-bottom: 10px;
+}
+
+.wallet-section-header h3 {
+  margin: 0;
+}
+
+.wallet-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.wallet-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.sell-form {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.sell-form .wallet-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.sell-form .wallet-actions-row input {
+  flex: 1 1 12rem;
+}
+
+.sell-slider {
+  width: 100%;
+  accent-color: #3ecf8e;
+  cursor: pointer;
+}
+
+.sell-slider:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.wallet-form input {
+  flex: 1 1 220px;
+  min-width: 0;
+  background: #16161a;
+  border: 1px solid #2a2a31;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #e9e9ee;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.wallet-form select {
+  flex: 1 1 220px;
+  min-width: 0;
+  background: #16161a;
+  border: 1px solid #2a2a31;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #e9e9ee;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.wallet-form button,
+.wallet-actions-row button {
+  appearance: none;
+  border: 1px solid #3ecf8e;
+  background: transparent;
+  color: #3ecf8e;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wallet-form button:hover,
+.wallet-actions-row button:hover {
+  background: rgba(62, 207, 142, 0.12);
+}
+
+.wallet-form button:disabled,
+.wallet-actions-row button:disabled {
+  border-color: #3a3a42;
+  color: #5c5c66;
+  cursor: not-allowed;
+  background: none;
+}
+
+.balance-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  row-gap: 6px;
+  column-gap: 18px;
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.balance-grid dt {
+  color: #8b8b93;
+}
+
+.balance-grid dd {
+  margin: 0;
+  color: #e9e9ee;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.provenance-list,
+.trade-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #d6d6dd;
+}
+
+.trade-list li.trade-mine {
+  color: #3ecf8e;
+}
+
+.warning-text {
+  color: #e5484d;
+  font-size: 12.5px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.required-copy {
+  color: #e8cf8a;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.error-text {
+  color: #e5484d;
+  font-size: 12.5px;
+  margin: 8px 0 0;
+}
+
+.unsaved-units-alert {
+  border: 1px solid #e5484d;
+  background: rgba(229, 72, 77, 0.12);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.unsaved-units-alert .error-text {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.status-ok {
+  color: #3ecf8e;
+  font-size: 13px;
+  margin: 0;
+}
+
+.status-warn {
+  color: #e8cf8a;
+  font-size: 13px;
+  margin: 0;
+}
+
+.muted {
+  color: #7c7c85;
+  font-size: 12px;
+}
+
+.wallet-footer {
+  border-top: 1px solid #2a2a31;
+  padding-top: 14px;
+  color: #7c7c85;
+  font-size: 12px;
+}
+
+.wallet-footer p {
+  margin: 0;
+}
+
+/* Miner tab — backend catalog, controls, pending journal, job card */
+.miner-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.backend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.backend-card {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid #2a2a31;
+  border-radius: 14px;
+  background: #16161a;
+  color: #e9e9ee;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.backend-card:hover {
+  border-color: #3a3a42;
+}
+
+.backend-card--selected {
+  border-color: #3ecf8e;
+  background: rgba(62, 207, 142, 0.08);
+}
+
+.backend-card--disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.backend-card__title {
+  margin: 0;
+  font-size: 14.5px;
+  color: #e9e9ee;
+}
+
+.backend-card__beneficiary,
+.backend-card__formula,
+.backend-card__caption {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.backend-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.backend-card__tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #2a2a31;
+  background: #1c1c21;
+  color: #8b8b93;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.install-hint {
+  margin: 0 0 12px;
+  color: #b9b9c2;
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: pre-line;
+  max-width: 62ch;
+}
+
+.miner-status {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.progress-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.progress-row__label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+  color: #d6d6dd;
+}
+
+.progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: #16161a;
+  border: 1px solid #2a2a31;
+  overflow: hidden;
+}
+
+.progress-bar__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #3ecf8e;
+  transition: width 0.2s ease;
+}
+
+.miner-power {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.team-brand {
+  display: block;
+  margin-top: 12px;
+}
+
+.team-brand img {
+  max-width: 260px;
+  width: 100%;
+  height: auto;
+}
+
+.passkey-section {
+  margin-top: 12px;
+}
+
+.passkey-form,
+.username-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.username-form {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.username-form .firstrun-input-row {
+  width: 100%;
+}
+
+.username-form button[type="submit"] {
+  align-self: flex-start;
+}
+
+.passkey-form input[type="password"] {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #2a2a31;
+  background: #1c1c22;
+  color: #e9e9ee;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.earning-status .primary-cta {
+  margin-top: 8px;
+}
+
+.firstrun-next-hint {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.pending-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  color: #d6d6dd;
+}
+
+.pending-table th {
+  text-align: left;
+  color: #8b8b93;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 8px 8px 0;
+  border-bottom: 1px solid #2a2a31;
+}
+
+.pending-table td {
+  padding: 8px 8px 8px 0;
+  border-bottom: 1px solid #2a2a31;
+  vertical-align: top;
+}
+
+.pending-table code {
+  color: #9fd8bd;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* Market tab — multi-desk list (desktop/src/components/DeskTable.jsx). */
+.desk-table__caption {
+  caption-side: top;
+  text-align: left;
+  padding: 0 0 8px;
+}
+
+.desk-table__row--best {
+  background: rgba(62, 207, 142, 0.06);
+}
+
+.desk-table__tag {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.desk-table__tag--best {
+  color: #16161a;
+  background: #3ecf8e;
+}
+
+.desk-table__tag--mine {
+  color: #8b8b93;
+  border: 1px solid #2a2a31;
+  background: transparent;
+}
+
+.desk-table__badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.desk-table__badge--open {
+  color: #16161a;
+  background: #3ecf8e;
+}
+
+.desk-table__badge--closed {
+  color: #8b8b93;
+  background: #1c1c21;
+  border: 1px solid #2a2a31;
+}
+
+/* Ops tab — desk controls, enrollment, accept-and-mint, dashboard */
+.ops-tab .wallet-form-block {
+  margin-top: 14px;
+}
+
+.ops-tab .wallet-form-block:first-of-type {
+  margin-top: 12px;
+}
+
+.ops-check-form {
+  margin-top: 10px;
+}
+
+.ops-pending-group {
+  margin-bottom: 14px;
+}
+
+.ops-dashboard-subsection {
+  margin-top: 16px;
+}
+
+.ops-dashboard-subsection h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #d6d6dd;
+}
+
+/* First-run FAH username prompt (A-D T9) — one-time modal gated by App.jsx via
+   backend_fah_identity. Overlays the whole app; the honesty banner still mounts underneath. */
+.firstrun-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.firstrun-card {
+  background: #1c1c22;
+  border: 1px solid #2a2a31;
+  padding: 24px;
+  border-radius: 12px;
+  max-width: 380px;
+  width: 90%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.firstrun-card h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.firstrun-card input {
+  background: #16161a;
+  border: 1px solid #2a2a31;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #e9e9ee;
+  font-size: 13px;
+}
+
+.firstrun-input-row {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid #2a2a31;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #16161a;
+}
+
+.firstrun-prefix {
+  display: flex;
+  align-items: center;
+  padding: 8px 8px 8px 10px;
+  color: #3ecf8e;
+  font-weight: 700;
+  font-size: 13px;
+  background: #14231b;
+  border-right: 1px solid #2a2a31;
+}
+
+.firstrun-input-row input {
+  border: none;
+  border-radius: 0;
+  flex: 1;
+  background: transparent;
+}
+
+.firstrun-preview {
+  margin: 0;
+  font-size: 13px;
+  color: #9a9aa2;
+}
+
+.firstrun-preview strong {
+  color: #3ecf8e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.firstrun-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.firstrun-actions button[type="submit"] {
+  appearance: none;
+  border: 1px solid #3ecf8e;
+  background: #3ecf8e;
+  color: #16161a;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.firstrun-actions button[type="submit"]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  border-color: #3a3a42;
+  background: #3a3a42;
+  color: #7c7c85;
+}
+
+.link-button {
+  appearance: none;
+  background: none;
+  border: none;
+  color: #8b8b93;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.link-button:hover {
+  color: #d6d6dd;
+}

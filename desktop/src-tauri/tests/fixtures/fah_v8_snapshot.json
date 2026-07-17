@@ -1,0 +1,62 @@
+{
+  "info": {
+    "version": "8.5.6",
+    "account": "acct_9Kd2LpQ",
+    "hostname": "founder-rig",
+    "cpus": 16,
+    "gpus": {
+      "gpu:01:00:00": { "description": "NVIDIA GeForce RTX 3080", "supported": true }
+    }
+  },
+  "config": {
+    "user": "GoatFolder",
+    "team": 1054249,
+    "passkey": "",
+    "cause": "any"
+  },
+  "groups": {
+    "": {
+      "config": {
+        "paused": false,
+        "cpus": 16,
+        "gpus": { "gpu:01:00:00": { "enabled": true } },
+        "on_idle": false,
+        "finish": false,
+        "cuda": true,
+        "hip": true
+      }
+    }
+  },
+  "units": [
+    {
+      "number": 0,
+      "state": "RUN",
+      "progress": 0.42,
+      "wu_progress": 0.42,
+      "assignment": { "project": 18201 },
+      "eta": "3h 19m",
+      "ppd": 1250000,
+      "paused": false
+    },
+    {
+      "number": 1,
+      "state": "RUN",
+      "progress": 0.10,
+      "wu_progress": 0.104,
+      "assignment": { "project": 18202, "gpus": ["gpu:01:00:00"] },
+      "eta": "5h 02m",
+      "ppd": 3400000,
+      "paused": false
+    },
+    {
+      "number": 2,
+      "state": "RUN",
+      "progress": 0.05,
+      "wu_progress": 0.053,
+      "assignment": { "project": 18203 },
+      "eta": "6h 44m",
+      "ppd": 980000,
+      "paused": false
+    }
+  ]
+}

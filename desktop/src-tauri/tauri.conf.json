@@ -15,16 +15,16 @@
       {
         "label": "main",
         "title": "D.A. G.O.A.T.",
-        "width": 460,
-        "height": 720,
-        "minWidth": 420,
-        "minHeight": 640,
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1000,
+        "minHeight": 680,
         "resizable": true,
         "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8545 http://127.0.0.1:8787 http://localhost:8787 https://sepolia.base.org https://api.foldingathome.org; script-src 'self' 'unsafe-eval'; worker-src 'self' blob:"
     }
   },
   "bundle": {
@@ -32,7 +32,6 @@
     "targets": "all",
     "category": "Utility",
     "shortDescription": "GoatCoin desktop node — the D.A. G.O.A.T. alpha.",
-    "externalBin": ["binaries/goatd"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1,0 +1,11 @@
+# Node
+node_modules/
+
+# Vite build output
+dist/
+
+# Tauri build output (already covered by the repo-root **/target/ rule; kept local for clarity)
+src-tauri/target/
+
+# Tauri-generated capability/ACL schema files (editor autocompletion only, regenerated on build)
+src-tauri/gen/schemas/

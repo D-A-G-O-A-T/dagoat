@@ -1,20 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the D.A. G.O.A.T. main window: run core APIs and manage the goatd sidecar (execute + kill).",
+  "description": "Default capability for the D.A. G.O.A.T. main window: core APIs plus the store plugin (Season 0 — no sidecar). Wallet keys live in Stronghold snapshots managed entirely Rust-side (no JS stronghold plugin).",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "binaries/goatd",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    },
-    "shell:allow-kill"
-  ]
+  "permissions": ["core:default", "store:default"]
 }

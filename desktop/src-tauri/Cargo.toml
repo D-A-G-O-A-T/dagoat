@@ -1,3 +1,7 @@
+# Standalone crate — kept independent of the root goat-core workspace (F:\...\GPUCoin_Guidance\Cargo.toml)
+# so `cargo check`/`cargo build` here never pull in the spine's dependency graph.
+[workspace]
+
 [package]
 name = "dagoat"
 version = "0.1.0"
@@ -15,16 +19,39 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+async-trait = "0.1"
+# FAH adapter (S6): async runtime promoted from dev-dep; WebSocket control of FAHClient v8
+# local API (plain ws:// — no TLS backend, so no openssl); stats polling over rustls only.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "sync"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+sha2 = "0.11"
+dirs = "6"
+tauri-plugin-store = "2.4.3"
 
-# OS-level process priority backends for the Power Dial.
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
-  "Win32_Foundation",
-  "Win32_System_Threading",
+# --- Password-protected multi-wallet with Rust-side Ethereum signing ---
+# The private key NEVER crosses the IPC bridge into JS: alloy signs in Rust and
+# only the signature / signed raw tx is returned. See
+# docs/superpowers/specs/2026-07-13-stronghold-wallet-design.md
+#
+# Stronghold is used **directly** from Rust (iota_stronghold), not via the JS
+# tauri-plugin-stronghold (which was a decoy — JS never calls Stronghold). Each
+# wallet is ONE Stronghold snapshot, encrypted under a snapshot key derived from
+# that wallet's own password via Argon2id (spec §2 / §4), so each wallet is gated
+# by its OWN password. The secp256k1 key is a record in that snapshot's store.
+iota_stronghold = "2"
+# alloy = the Ethereum signer + tx/typed-data encoding (secp256k1 via k256).
+alloy = { version = "2", features = [
+    "signer-local", # PrivateKeySigner (secp256k1 local signer)
+    "consensus",    # TxEip1559 / TxEnvelope / Signed / SignableTransaction
+    "eips",         # Encodable2718 (encoded_2718) + EIP-2930 AccessList
+    "dyn-abi",      # EIP-712 TypedData
+    "eip712",       # eip712_signing_hash across signer modules
 ] }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
+argon2 = "0.5"                 # password KDF (Argon2id → snapshot key)
+zeroize = "1"                  # wipe key bytes after use
+rand = "0.9"                   # salt / snapshot-filename generation
+hex = "0.4"

@@ -1,0 +1,12 @@
+{
+  "bid": null,
+  "buyDesk": null,
+  "chainId": 84532,
+  "enrollmentRegistry": null,
+  "goatCoin": null,
+  "holdbackEscrow": null,
+  "mockUSDT": null,
+  "unitReward": null,
+  "workMinter": null,
+  "note": "Sepolia v2 not yet deployed. Run DeployFreeMarket per contracts/SEASON0_UI_RUNBOOK.md, reusing EXISTING_GOAT/EXISTING_REGISTRY/EXISTING_USDT from the v1 addresses (0x7e7553bc…, 0xa8326d35…, 0x63bb8f47…), then copy contracts/deployments/84532.json over this file."
+}
