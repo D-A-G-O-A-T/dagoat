@@ -1,7 +1,7 @@
-# Local multi-node lab guide (`goatd` + Docker)
+# D.A. G.O.A.T. Engine — local multi-node lab guide (`goatd` + Docker)
 
-How to run the **D.A. G.O.A.T.** verification mesh on your machine: what the node does, how to
-limit CPU (power/noise dial), and how containers stay isolated from the host.
+How to run the **D.A. G.O.A.T. Engine** (the `goatd` verification-mesh runtime) on your machine:
+what the node does, how to limit CPU (power/noise dial), and how containers stay isolated from the host.
 
 > **This is an experimental verification mesh — not yet a secured compute marketplace.** It is safe
 > to run and easy to stop, but it is *not* finished: **ML-DSA-65 / ML-KEM-768 / AES-256-GCM are real

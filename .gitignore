@@ -85,3 +85,7 @@ START_HERE.md
 DOC_INDEX.md
 09_Original_Prompts_Reference.md
 CLAUDE.md
+
+# local auth noise
+_gh_*.txt
+

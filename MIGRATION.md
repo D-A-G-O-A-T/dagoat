@@ -1,6 +1,6 @@
-# MIGRATION.md — Transferring the GoatCoin Containerized Build to a New Host
+# MIGRATION.md — Transferring the D.A. G.O.A.T. Engine Containerized Build to a New Host
 
-This guide moves the fully-built GoatCoin testnet (the `goatd` daemon + the 5-node cluster) from one
+This guide moves the fully-built D.A. G.O.A.T. Engine testnet (the `goatd` daemon + the 5-node cluster) from one
 machine to another — e.g., a local laptop → a cloud VPS — **without requiring a Rust toolchain on the
 destination**. Read [`DEPLOY.md`](DEPLOY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md) §6 for the
 runtime model.
@@ -9,7 +9,7 @@ runtime model.
 
 ## 1. What "the build" actually is (the transfer set)
 
-The GoatCoin build is fully described by a small set of files — **not** by any compiled artifact,
+The D.A. G.O.A.T. Engine build is fully described by a small set of files — **not** by any compiled artifact,
 which is always regenerated:
 
 | Transfer | Path(s) | Why |
@@ -167,7 +167,7 @@ between hosts.
 
 ---
 
-*A GoatCoin migration is intentionally boring: the daemon is a single self-contained binary with no
+*A D.A. G.O.A.T. Engine migration is intentionally boring: the daemon is a single self-contained binary with no
 hidden local state, so the whole network is reproducible from `Cargo.lock` + the container recipes +
 `genesis.json`. The only thing that ever needs careful, secure handling is per-node key material —
 and at V1.0 there is none.*

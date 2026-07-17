@@ -2,8 +2,9 @@
 
 **D.A. G.O.A.T.** — *Decentralized Architecture, Global Orchestration & Aligned Technology*
 
-Experimental **post-quantum verification mesh**: nodes form a PQ-authenticated gossip network,
-verify capability records, and (Phase-0) run an out-of-process worker harness.
+The software is the **D.A. G.O.A.T. Engine** — the post-quantum verification-mesh runtime (the
+`goatd` daemon). Nodes form a PQ-authenticated gossip network, verify capability records, and
+(Phase-0) run an out-of-process worker harness.
 
 **License:** [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)
 
@@ -46,7 +47,7 @@ Deploy checklist: **[`DEPLOY.md`](DEPLOY.md)** · Key migration: **[`MIGRATION.m
 
 | Path | Role |
 |------|------|
-| `src/` | Deploy spine library + `goatd` / crypto / isolation binaries |
+| `src/` | **D.A. G.O.A.T. Engine** deploy spine — `goatd` / crypto / isolation binaries |
 | `goatcoin-rs/` | Mechanism workspace (protocol, ledger, net experiments) |
 | `reference/` | Python reference implementations & tests |
 | `desktop/` | Early desktop shell (optional, incomplete product) |

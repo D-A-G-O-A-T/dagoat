@@ -1,4 +1,4 @@
-# DEPLOY.md — GoatCoin Node Deployment & the Backend Swap Checklist
+# DEPLOY.md — D.A. G.O.A.T. Engine (goatd) deployment & the Backend Swap Checklist
 
 This document governs the one deployment step the external review flagged as the critical
 implementation risk: **replacing the reference crypto backends in `src/bin/goatd.rs` with audited FIPS
