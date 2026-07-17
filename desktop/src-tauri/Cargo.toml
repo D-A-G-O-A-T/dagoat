@@ -1,4 +1,4 @@
-# Standalone crate — kept independent of the root goat-core workspace (F:\...\GPUCoin_Guidance\Cargo.toml)
+# Standalone crate — kept independent of the root goat-core workspace (the repo-root Cargo.toml)
 # so `cargo check`/`cargo build` here never pull in the spine's dependency graph.
 [workspace]
 

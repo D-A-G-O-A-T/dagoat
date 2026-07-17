@@ -22,7 +22,7 @@ All commands are **Windows PowerShell** unless marked otherwise.
 One-time app deps:
 
 ```powershell
-cd F:\flight\GPUCoin_Guidance\desktop
+cd <repo-root>\desktop
 npm install
 ```
 
@@ -50,7 +50,7 @@ account0 key : 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff8
 account2 addr: 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
 ```
 
-**Terminal B — deploy + wire (from `F:\flight\GPUCoin_Guidance\contracts`):**
+**Terminal B — deploy + wire (from `<repo-root>\contracts`):**
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.foundry\bin;$env:PATH"
@@ -84,13 +84,13 @@ foreach ($a in @($ESCROW, $MINTER, $DESK, $env:FOUNDER_ADDRESS, $env:RESERVE_ADD
 **Refresh the UI's address config** (required after every redeploy):
 
 ```powershell
-Copy-Item F:\flight\GPUCoin_Guidance\contracts\deployments\31337.json F:\flight\GPUCoin_Guidance\desktop\src\chain\deployments\31337.json -Force
+Copy-Item <repo-root>\contracts\deployments\31337.json <repo-root>\desktop\src\chain\deployments\31337.json -Force
 ```
 
 **Terminal C — the app:**
 
 ```powershell
-cd F:\flight\GPUCoin_Guidance\desktop
+cd <repo-root>\desktop
 cargo tauri dev
 ```
 
@@ -133,7 +133,7 @@ The window opens with the honesty banner, mode toggle, and three tabs: **Contrib
 The v1 pilot contracts are already live on Sepolia; the free-market (v2) contracts need one deploy, **reusing** the live GoatCoin/Registry/MockUSDT so balances and enrollment carry over:
 
 ```powershell
-cd F:\flight\GPUCoin_Guidance\contracts
+cd <repo-root>\contracts
 $env:PATH = "$env:USERPROFILE\.foundry\bin;$env:PATH"
 $env:BASE_SEPOLIA_RPC_URL = "https://sepolia.base.org"
 $env:SAFE_ADDRESS         = "<your Sepolia EOA>"
@@ -175,4 +175,4 @@ A new public-good project becomes a Contribute option by (1) implementing the `W
 - `npx vitest run` (desktop): **52 passed / 1 skipped** (skip = opt-in live-anvil e2e, `GOAT_E2E=1`).
 - `cargo test --lib` (src-tauri): **40 passed / 2 ignored** (ignored = live-FAH integration tests).
 - Live-anvil e2e (S9): createJob → mintBatch → 85/15 split asserted on-chain → journal stamped only after confirmation.
-- FAH detect→install-hint path verified on a machine without FAHClient (honest `Missing` state). Live fold + credited-WU delta is the founder's acceptance run (§2) — FAH stats field names carry a small residual risk noted in `F:\.superpowers\sdd\s6-report.md`; worst case is a visible no-op, never fake data.
+- FAH detect→install-hint path verified on a machine without FAHClient (honest `Missing` state). Live fold + credited-WU delta is the founder's acceptance run (§2) — FAH stats field names carry a small residual risk (noted in the internal S6 review); worst case is a visible no-op, never fake data.
