@@ -1168,6 +1168,42 @@ mod tests {
         (dir, store, db, lock)
     }
 
+    /// Fold `<db>-wal` into the main database file **synchronously**, so that a
+    /// byte copy of that one file is a whole database.
+    ///
+    /// `drop(store)` is not a close and does not checkpoint. sqlx hands the
+    /// SQLite connection to a background worker thread, and it is that thread's
+    /// `sqlite3_close` — as the last connection to the file — that checkpoints
+    /// the `-wal` in and unlinks it. Measured on Windows, `-wal` is still
+    /// **296,672 bytes** the instant `drop` returns, 25 runs out of 25, and only
+    /// reaches 0 while the *next* `await` in the test is already in flight.
+    ///
+    /// So a test that drops the store and then copies `db` alone is racing that
+    /// worker thread for its fixture.
+    /// [`cantopen_on_a_readable_file_blames_the_directory_not_the_file`] won the
+    /// race on Windows and in CI run 30512647063, and lost it on 2026-07-30:
+    /// `NotStreamGDatabase { table: "store_meta" }`, i.e. the copy had no schema
+    /// at all, because every page of it was still sitting in the uncopied
+    /// `-wal`. Widening the window would only make the flake rarer; this takes
+    /// the race out.
+    ///
+    /// Same `PRAGMA wal_checkpoint(TRUNCATE)` through the one pooled connection
+    /// that `profile_auth.rs` already uses before scanning a raw database file —
+    /// one mechanism for this, not two.
+    async fn checkpoint_wal(store: &StreamGStore) {
+        store
+            .read(|handle| {
+                Box::pin(async move {
+                    handle
+                        .fetch_optional(sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)"))
+                        .await?;
+                    Ok::<(), StreamGStoreError>(())
+                })
+            })
+            .await
+            .expect("checkpoint the WAL into the main database file");
+    }
+
     /// Plant one quarantine row through the **real** writer, so every test
     /// reads what production writes (id derivation, AAD, body shape included).
     async fn plant(
@@ -2225,8 +2261,12 @@ mod tests {
     async fn a_forensic_copy_without_its_wal_is_warned_about() {
         let (dir, store, db, lock) = live_store().await;
 
-        // Five rows, then close the store so SQLite checkpoints and removes
-        // the -wal. These five are inside the .db file itself.
+        // Five rows, checkpointed into the .db file itself. The checkpoint is
+        // explicit: `drop(store)` alone would leave all five in the -wal and
+        // only *maybe* fold them in before the reopen below (see
+        // [`checkpoint_wal`]), which would silently turn the `total == 5`
+        // assertion into `total == 0` — the same race that took the cantopen
+        // test red on ubuntu.
         for i in 0..5u64 {
             plant(
                 &store,
@@ -2239,6 +2279,7 @@ mod tests {
             )
             .await;
         }
+        checkpoint_wal(&store).await;
         drop(store);
 
         // Three more, left hot in the -wal.
@@ -2344,14 +2385,28 @@ mod tests {
     /// either VFS's behaviour turns it red instead of passing silently
     /// (`libsqlite3-sys` is bundled, so both platforms compile the same SQLite).
     ///
-    /// **The unix branch was written from the CI dump above, could not be run on
-    /// the dev machine (no Linux, no container runtime), and is now VERIFIED**:
-    /// the first Actions run carrying it reported `781 passed; 5 failed`, up from
-    /// `780 passed; 6 failed`, with this test absent from the failure list and the
-    /// remaining five being the accepted published-checkout audit tests. So the
-    /// premise — that a read-only open with no `-wal` present never touches the
-    /// WAL-index on unix — held in practice and not merely in the error dump it
-    /// was inferred from.
+    /// **Corrected again 2026-07-30 — "VERIFIED" was two samples of a coin
+    /// flip.** This doc previously called the unix branch verified because two
+    /// consecutive Actions runs carried it green. A third run then failed here
+    /// with `NotStreamGDatabase { path: ".../blocked/stream_g.sqlite", table:
+    /// "store_meta" }`.
+    ///
+    /// Read that error carefully: it is **not** the unix VFS refusing the
+    /// `-shm`. The open *succeeded* and found a database with no schema in it —
+    /// so the unix premise held, and what was broken was this test's fixture.
+    /// `drop(store)` had been treated as a close, and it is not one; the copy
+    /// below was racing sqlx's background worker for the checkpoint that makes
+    /// the lone `.sqlite` file whole. See [`checkpoint_wal`] for the
+    /// measurement (`-wal` still 296,672 bytes when `drop` returns, 25/25 on
+    /// Windows) and for the fix. Two green runs were two wins of that race, not
+    /// evidence about SQLite.
+    ///
+    /// So the unix premise — that a read-only open with no `-wal` beside it
+    /// never touches the WAL-index — remains **inferred from CI dumps, not
+    /// reproduced locally** (no Linux, no container runtime on the dev machine).
+    /// It is consistent with all three runs, including the failing one, which is
+    /// more than it could claim before; it is not the same thing as having been
+    /// run under a debugger here.
     ///
     /// Mutation proof (Windows): delete the `SQLITE_CANTOPEN` branch from
     /// [`map_sqlx_error`] and this test goes red — the error becomes
@@ -2371,15 +2426,29 @@ mod tests {
             WALL_NOW,
         )
         .await;
+        checkpoint_wal(&store).await;
         drop(store);
 
-        // Baseline: these exact bytes read cleanly. Without this control the
-        // test could pass because the database is broken rather than because
-        // the directory refuses the sidecar.
-        let ok = load_report(&db, Some(&key_a()), &QuarantineQuery::default())
+        // Baseline: the SINGLE FILE this test copies is a whole database on its
+        // own. The old baseline read `db` in place, where its `-wal` sits right
+        // beside it — so it proved the *pair* readable and said nothing about
+        // the lone-file copy below. That gap is what went red on ubuntu-latest:
+        // `NotStreamGDatabase { table: "store_meta" }`, a copy with no schema in
+        // it at all. Read a pristine copy, in its own directory, so the zero-byte
+        // `-wal` that this read itself leaves behind cannot land beside the
+        // blocked copy and change what that copy is.
+        let control_dir = dir.path().join("control");
+        std::fs::create_dir_all(&control_dir).unwrap();
+        let control = control_dir.join("stream_g.sqlite");
+        std::fs::copy(&db, &control).expect("copy the database");
+        let ok = load_report(&control, Some(&key_a()), &QuarantineQuery::default())
             .await
-            .expect("baseline read");
-        assert_eq!(ok.total, 1);
+            .expect("baseline: the lone-file copy must be a complete database");
+        assert_eq!(
+            ok.total, 1,
+            "baseline: the copy must carry the planted row, else a failure below could be about \
+             the copy being empty rather than about the directory refusing the sidecar"
+        );
 
         // The same bytes, in a directory where `<db>-shm` cannot be created.
         let blocked_dir = dir.path().join("blocked");
