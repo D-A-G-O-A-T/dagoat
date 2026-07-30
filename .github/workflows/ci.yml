@@ -449,6 +449,34 @@ jobs:
           # Keep in lockstep with $ExpectedIgnoredPassed in run-full-gate.ps1.
           EXPECTED_HAZARD_TESTS: "19"
 
+      # THE ONLY WAY A *PASSING* STALL LEAVES A TRACE. The harness's mid-flight
+      # forensics arm fires at 15s whenever a node-facing child is slow, whether
+      # or not the test then goes on to pass, and appends to this file. On a red
+      # run the same reading also reaches the step log (that is where the
+      # 2026-07-30 capture came from) -- but the suite has a recorded class of
+      # runs that stall and then PASS, and today those readings die with the
+      # runner and are retrievable nowhere.
+      #
+      # `if: always()` because the interesting run is the failing one, and the
+      # default `success()` would skip precisely then.
+      #
+      # `if-no-files-found: warn`, NOT the `error` used by aux-abi-universe
+      # below: there, a missing artifact means the build produced nothing and
+      # the job is a lie. Here, a missing file is the HEALTHY outcome -- no
+      # child was ever slow enough to trigger the arm -- and failing on it would
+      # red every clean run.
+      #
+      # `hazard.log` is deliberately NOT uploaded: the step tees it from its own
+      # stdout, so it is a strict subset of the step log GitHub already retains.
+      - name: Upload node forensics (present only if something stalled)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: anvil-node-forensics
+          path: tools/goat-attestor/gate-logs/node-forensics.log
+          if-no-files-found: warn
+          retention-days: 14
+
   # ---------------------------------------------------------------------------
   # aux-abi-universe: builds `contracts/out` on Linux, for the Windows job below.
   #

@@ -1399,6 +1399,64 @@ const FORENSICS_ARM_MIDFLIGHT: &str = "MID-FLIGHT";
 /// capture.
 const FORENSICS_ARM_GIVE_UP: &str = "AT-GIVE-UP";
 
+/// The liveness question: is the node serving a brand-new connection at all?
+///
+/// Kept as its own constant because [`node_forensics`] prints its answer on a
+/// line whose exact prefix a test matches, and because it is the ONLY probe
+/// taken when the node is not answering — see [`STATE_PROBES`].
+const LIVENESS_PROBE_BODY: &str =
+    r#"{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}"#;
+
+/// The node-STATE questions, asked **only when the liveness probe answered**.
+///
+/// # Why these two, and why not the block height
+///
+/// The block height cannot localise a stalled deploy, and this was measured
+/// rather than argued: across 237 of the recorded broadcasts under
+/// `contracts/broadcast/DeployStreamG.s.sol/31337/`, head `0x3` is the
+/// **terminal** height of a *fully completed* 21-transaction deploy in 71 of
+/// them, and at the instant the head first reaches 3 the mined-transaction
+/// count ranges 3..21 with a modal value of **21**. A CI stall on 2026-07-30
+/// was read as "the chain did not advance, so nothing was broadcast" on the
+/// strength of a `0x3`; that reading was wrong in both directions — a harness
+/// node starts at `0x0` ([`spawn_anvil`] passes no `--block-time`, and
+/// `wait_until_ready` only sends `eth_chainId`), so `0x3` in fact proves at
+/// least one broadcast transaction was sent *and mined*.
+///
+/// The deployer nonce does not have that defect. Every transaction of the
+/// deploy is sent by [`ANVIL_DEPLOYER_ADDRESS`] — `--sender` pins it — so
+/// `eth_getTransactionCount(deployer, "latest")` counts mined deploy
+/// transactions one-for-one, and `txpool_status` separates "not sent" from
+/// "sent and not mined". Together they answer where inside the silent
+/// broadcast window forge was sitting, which is the question five
+/// investigations and one CI capture have all failed to answer.
+///
+/// # Why they are gated on the liveness probe
+///
+/// A probe that cannot be answered costs the full budget, and these run while
+/// a panic is already unwinding. Gating keeps the expensive path — the node is
+/// NOT serving — at exactly its present cost of one probe, and spends the
+/// extra two only when the node has just demonstrated it answers in
+/// microseconds.
+/// A function rather than a `const` array because the nonce probe interpolates
+/// [`ANVIL_DEPLOYER_ADDRESS`] — reading the same constant `--sender` is built
+/// from (`:1878`), so the probe cannot drift onto a different account than the
+/// one whose nonce means something here.
+fn state_probes() -> [(&'static str, String); 2] {
+    [
+        (
+            "deployer nonce (eth_getTransactionCount latest)",
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["{ANVIL_DEPLOYER_ADDRESS}","latest"]}}"#
+            ),
+        ),
+        (
+            "txpool_status (pending / queued)",
+            r#"{"jsonrpc":"2.0","id":1,"method":"txpool_status","params":[]}"#.to_string(),
+        ),
+    ]
+}
+
 /// A JSON-RPC round-trip issued over a **brand-new TCP socket**, hand-rolled
 /// on `std::net`.
 ///
@@ -1410,9 +1468,16 @@ const FORENSICS_ARM_GIVE_UP: &str = "AT-GIVE-UP";
 /// strictly better question: it cannot be served by a pooled connection, so
 /// "answered" here means the node accepted a *new* connection and served it.
 ///
+/// `request_body` is the whole JSON-RPC request object, so one socket recipe
+/// serves both the liveness question and the node-state questions in
+/// [`STATE_PROBES`] — the alternative was a second, near-identical socket
+/// routine that could drift from this one in exactly the conditions where
+/// neither can be re-run.
+///
 /// `Ok((body, elapsed))` / `Err((why, elapsed))`.
 fn probe_node_over_a_fresh_connection(
     rpc_url: &str,
+    request_body: &str,
     budget: Duration,
 ) -> Result<(String, Duration), (String, Duration)> {
     let started = Instant::now();
@@ -1433,7 +1498,7 @@ fn probe_node_over_a_fresh_connection(
         let mut sock = TcpStream::connect_timeout(&addr, budget)?;
         sock.set_read_timeout(Some(budget))?;
         sock.set_write_timeout(Some(budget))?;
-        let body = r#"{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}"#;
+        let body = request_body;
         // `Connection: close` so the reply is framed by EOF and this needs no
         // chunked/keep-alive parsing of its own.
         let request = format!(
@@ -1610,10 +1675,32 @@ fn tcp_socket_census() -> String {
 /// stall was read by someone who had not been present when it was taken, and
 /// the recurring cost was not missing data but unlabelled data.
 pub(crate) fn node_forensics(rpc_url: &str, probe_budget: Duration) -> String {
-    let probe = match probe_node_over_a_fresh_connection(rpc_url, probe_budget) {
-        Ok((body, took)) => format!("ANSWERED in {took:?} -> {body}"),
-        Err((why, took)) => format!("NO ANSWER after {took:?} -> {why}"),
+    let (probe, serving) =
+        match probe_node_over_a_fresh_connection(rpc_url, LIVENESS_PROBE_BODY, probe_budget) {
+            Ok((body, took)) => (format!("ANSWERED in {took:?} -> {body}"), true),
+            Err((why, took)) => (format!("NO ANSWER after {took:?} -> {why}"), false),
+        };
+
+    // Gated: see [`state_probes`]. A node that just answered in microseconds
+    // will answer these too, so the ANSWERED path pays microseconds for them;
+    // the NO-ANSWER path pays nothing and stays at its present one-probe cost.
+    let state = if serving {
+        state_probes()
+            .iter()
+            .map(|(label, body)| {
+                let verdict = match probe_node_over_a_fresh_connection(rpc_url, body, probe_budget)
+                {
+                    Ok((reply, took)) => format!("ANSWERED in {took:?} -> {reply}"),
+                    Err((why, took)) => format!("NO ANSWER after {took:?} -> {why}"),
+                };
+                format!("  {label}: {verdict}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        "  (not asked: the node is not serving, so there is no state to read)".to_string()
     };
+
     format!(
         // The header deliberately says only "a measurement". An earlier revision
         // read "(harness gave up; …)", which is true of the AT-GIVE-UP arm and
@@ -1623,6 +1710,7 @@ pub(crate) fn node_forensics(rpc_url: &str, probe_budget: Duration) -> String {
         // only created a chance to state it wrongly.
         "--- node forensics (a measurement, not a root cause) ---\n\
          fresh-socket eth_blockNumber to {rpc_url}: {probe}\n\
+         node state:\n{state}\n\
          live anvil processes: {}\n\
          host TCP census: {}\n\
          HOW TO READ THIS: ANSWERED means the node was serving a brand-new connection at the \
@@ -1630,6 +1718,15 @@ pub(crate) fn node_forensics(rpc_url: &str, probe_budget: Duration) -> String {
          client that gave up. NO ANSWER means the node itself had stopped serving — look at \
          anvil. That single bit is what five investigations lacked; record it, do not re-derive \
          it.\n\
+         HOW TO READ THE NODE STATE: use the DEPLOYER NONCE, never the block height. The deploy \
+         sends 21 transactions from one account, so the nonce counts mined deploy transactions \
+         one-for-one; the height does not — measured over 237 recorded broadcasts, head 0x3 is \
+         the TERMINAL height of a fully COMPLETED 21-transaction deploy in 71 of them. So: nonce \
+         21 means forge finished sending and wedged in receipt collection or at exit; nonce below \
+         21 means it stalled mid-send, and the pool then splits that further — a non-empty \
+         pending pool with a static nonce is a mining defect and a DIFFERENT bug, while an empty \
+         pool means the next transaction was never sent. A CI capture on 2026-07-30 was read \
+         backwards for want of exactly this line.\n\
          --- end node forensics ---",
         live_anvil_processes(),
         tcp_socket_census(),
@@ -2710,7 +2807,26 @@ mod tests {
     /// on `join()` forever. The join is still load-bearing — it is what proves
     /// the probe really opened a socket — but a hang is a worse failure report
     /// than an assertion.
-    fn serve_one_json_rpc_reply(body: &'static str) -> (String, std::thread::JoinHandle<bool>) {
+    /// Serves `bodies.len()` replies, one per accepted connection, in order,
+    /// and returns **how many it actually served**.
+    ///
+    /// It became a sequence when [`node_forensics`] gained its gated state
+    /// probes: on the ANSWERED path it now opens three sockets, and a one-shot
+    /// server would have left probes 2 and 3 reporting NO ANSWER against a
+    /// dropped listener — a green test measuring a broken fixture, which is
+    /// the failure this repo has already recorded under "an assertion that
+    /// cannot fail is worse than no assertion".
+    ///
+    /// It returns **the request bodies it read**, not merely a count, and that
+    /// distinction was found by mutation rather than by design: replying
+    /// positionally without inspecting the request meant changing a probe's
+    /// `method` — say, sourcing the "deployer nonce" line from
+    /// `eth_blockNumber`, the precise confusion that misread the 2026-07-30 CI
+    /// capture — left every assertion green. Handing the requests back is what
+    /// lets the caller assert which questions were actually asked.
+    fn serve_json_rpc_replies(
+        bodies: &'static [&'static str],
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a fake JSON-RPC endpoint");
         let addr = listener
             .local_addr()
@@ -2720,32 +2836,36 @@ mod tests {
             .expect("non-blocking fake endpoint");
         let handle = std::thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(20);
-            let mut sock = loop {
-                if Instant::now() >= deadline {
-                    return false;
-                }
-                match listener.accept() {
-                    Ok((sock, _)) => break sock,
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(10));
+            let mut requests: Vec<String> = Vec::new();
+            for body in bodies {
+                let mut sock = loop {
+                    if Instant::now() >= deadline {
+                        return requests;
                     }
-                    Err(_) => return false,
-                }
-            };
-            sock.set_nonblocking(false)
-                .expect("blocking accepted socket");
-            sock.set_read_timeout(Some(Duration::from_secs(5)))
-                .expect("read timeout on the accepted socket");
-            let mut scratch = [0u8; 2048];
-            let _ = sock.read(&mut scratch);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = sock.write_all(response.as_bytes());
-            let _ = sock.flush();
-            true
+                    match listener.accept() {
+                        Ok((sock, _)) => break sock,
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => return requests,
+                    }
+                };
+                sock.set_nonblocking(false)
+                    .expect("blocking accepted socket");
+                sock.set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("read timeout on the accepted socket");
+                let mut scratch = [0u8; 2048];
+                let n = sock.read(&mut scratch).unwrap_or(0);
+                requests.push(String::from_utf8_lossy(&scratch[..n]).into_owned());
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(response.as_bytes());
+                let _ = sock.flush();
+            }
+            requests
         });
         (format!("http://{addr}"), handle)
     }
@@ -2757,14 +2877,44 @@ mod tests {
     /// counts as prose without an actual number behind them.
     #[test]
     fn node_forensics_reports_a_serving_endpoint_as_answering_and_names_the_environment() {
-        let (url, server) = serve_one_json_rpc_reply(r#"{"jsonrpc":"2.0","id":1,"result":"0x2a"}"#);
+        let (url, server) = serve_json_rpc_replies(&[
+            r#"{"jsonrpc":"2.0","id":1,"result":"0x2a"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":"0x15"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"pending":"0x0","queued":"0x0"}}"#,
+        ]);
 
         let report = node_forensics(&url, Duration::from_secs(5));
-        let served = server.join().expect("fake endpoint thread");
+        let asked = server.join().expect("fake endpoint thread");
+        assert_eq!(
+            asked.len(),
+            3,
+            "every probe must open its own socket — liveness plus the two state probes; a \
+             report that names a state it never asked for would be worse than one that omits \
+             it. Report:\n{report}"
+        );
+
+        // WHICH questions, not merely how many. Without this the probes could
+        // all be `eth_blockNumber` and every other assertion here would still
+        // pass, because the fixture answers positionally.
+        for (i, method) in [
+            "eth_blockNumber",
+            "eth_getTransactionCount",
+            "txpool_status",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(
+                asked[i].contains(&format!("\"method\":\"{method}\"")),
+                "probe {i} must ask {method}, got request:\n{}",
+                asked[i]
+            );
+        }
         assert!(
-            served,
-            "the probe never opened a socket to the endpoint, so nothing about reachability was \
-             measured"
+            asked[1].contains(ANVIL_DEPLOYER_ADDRESS),
+            "the nonce probe must name the account `--sender` pins, else the count it returns is \
+             about some other account: {}",
+            asked[1]
         );
 
         let verdict = probe_line(&report);
@@ -2781,6 +2931,33 @@ mod tests {
             "the verdict must name the endpoint it probed, got: {verdict}"
         );
 
+        // The state probes must carry what the node ACTUALLY said, on their own
+        // lines. Asserting each value separately is what fails if the two
+        // probes are collapsed into one, if either is dropped, or if the nonce
+        // line is fed the block height — the exact confusion the CI capture of
+        // 2026-07-30 was misread on.
+        let state_line = |needle: &str| -> String {
+            report
+                .lines()
+                .find(|l| l.trim_start().starts_with(needle))
+                .unwrap_or_else(|| panic!("report has no `{needle}` line:\n{report}"))
+                .to_string()
+        };
+        let nonce = state_line("deployer nonce");
+        assert!(
+            nonce.contains(": ANSWERED in ") && nonce.contains("\"0x15\""),
+            "the nonce line must carry the node's own answer, got: {nonce}"
+        );
+        let pool = state_line("txpool_status");
+        assert!(
+            pool.contains(": ANSWERED in ") && pool.contains("\"pending\""),
+            "the pool line must carry the node's own answer, got: {pool}"
+        );
+        assert_ne!(
+            nonce, pool,
+            "the two state probes must ask different questions"
+        );
+
         // Both counts must be real numbers, not decoration. `starts_with` a
         // digit is what fails if the count is dropped or replaced by prose.
         for label in ["live anvil processes: ", "host TCP census: "] {
@@ -2792,6 +2969,56 @@ mod tests {
             assert!(
                 value.chars().next().is_some_and(|c| c.is_ascii_digit()),
                 "`{label}` must carry a measured count, got `{value}`"
+            );
+        }
+    }
+
+    /// The GATE on the state probes: a node that is not serving must be asked
+    /// the liveness question and **nothing else**.
+    ///
+    /// This is a cost guarantee, and the cost is paid at the worst possible
+    /// moment — [`node_forensics`] runs while a panic is already unwinding, and
+    /// an unanswerable probe burns the whole budget rather than microseconds.
+    /// Ungated, the NO-ANSWER path would trip from one budget to three.
+    ///
+    /// Asserted on the report's TEXT, not on elapsed time, deliberately: this
+    /// file already has one 🔴 note about a wall-clock assertion here that
+    /// flaked the gate, and a timing assertion would reintroduce exactly that.
+    ///
+    /// Mutation proof: drop the `if serving` gate in [`node_forensics`] and
+    /// this goes red on the missing "not asked" line — and the two state labels
+    /// then appear, each reporting NO ANSWER, which is the useless output this
+    /// gate exists to avoid.
+    #[test]
+    fn a_node_that_is_not_serving_is_asked_the_liveness_question_and_nothing_else() {
+        // A port nothing is listening on. Bind then drop, so the port is known
+        // to have been free rather than assumed to be.
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").expect("bind to find a free port");
+            l.local_addr().expect("local_addr").port()
+        };
+
+        let report = node_forensics(
+            &format!("http://127.0.0.1:{port}"),
+            Duration::from_millis(700),
+        );
+
+        let verdict = probe_line(&report);
+        assert!(
+            verdict.contains(": NO ANSWER after "),
+            "precondition: the endpoint must be unreachable, else this proves nothing about the \
+             gate, got: {verdict}"
+        );
+        assert!(
+            report.contains("(not asked: the node is not serving"),
+            "a dead node must say the state was NOT asked, rather than leaving a reader to guess \
+             whether it was asked and failed:\n{report}"
+        );
+        for absent in ["deployer nonce (", "txpool_status ("] {
+            assert!(
+                !report.contains(absent),
+                "`{absent}` must not be probed when the node is not serving — that is three \
+                 budgets spent during an unwind to learn nothing:\n{report}"
             );
         }
     }
@@ -2888,7 +3115,11 @@ mod tests {
         let budget = Duration::from_millis(700);
 
         let started = Instant::now();
-        let outcome = probe_node_over_a_fresh_connection(&format!("http://{addr}"), budget);
+        let outcome = probe_node_over_a_fresh_connection(
+            &format!("http://{addr}"),
+            LIVENESS_PROBE_BODY,
+            budget,
+        );
         let elapsed = started.elapsed();
 
         let (why, _) =
@@ -2938,8 +3169,11 @@ mod tests {
         let port = free_port();
         let budget = Duration::from_secs(5);
 
-        let outcome =
-            probe_node_over_a_fresh_connection(&format!("http://127.0.0.1:{port}"), budget);
+        let outcome = probe_node_over_a_fresh_connection(
+            &format!("http://127.0.0.1:{port}"),
+            LIVENESS_PROBE_BODY,
+            budget,
+        );
 
         let (why, took) = outcome.expect_err("a closed port must not be reported as answering");
         // 🔴 THIS ASSERTION USED TO BE `took < budget`, AND IT FLAKED THE GATE.
