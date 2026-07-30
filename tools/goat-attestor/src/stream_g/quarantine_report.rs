@@ -2343,8 +2343,15 @@ mod tests {
     /// is vacuous on neither and a bundled-SQLite version bump that changes
     /// either VFS's behaviour turns it red instead of passing silently
     /// (`libsqlite3-sys` is bundled, so both platforms compile the same SQLite).
-    /// The unix branch is written from the CI dump above and is first verified
-    /// by the next CI run — there is no Linux on the dev machine to run it.
+    ///
+    /// **The unix branch was written from the CI dump above, could not be run on
+    /// the dev machine (no Linux, no container runtime), and is now VERIFIED**:
+    /// the first Actions run carrying it reported `781 passed; 5 failed`, up from
+    /// `780 passed; 6 failed`, with this test absent from the failure list and the
+    /// remaining five being the accepted published-checkout audit tests. So the
+    /// premise — that a read-only open with no `-wal` present never touches the
+    /// WAL-index on unix — held in practice and not merely in the error dump it
+    /// was inferred from.
     ///
     /// Mutation proof (Windows): delete the `SQLITE_CANTOPEN` branch from
     /// [`map_sqlx_error`] and this test goes red — the error becomes
