@@ -5,19 +5,13 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use goat_attestor::chain::{BatchStatus, ChainClient, MockChain, MockOp};
-use goat_attestor::challenger::{
-    ChallengeDecision, ChallengePolicy, Challenger, evaluate_batch,
-};
-use goat_attestor::proposer::{enrollment_epoch_id, is_enrollment_epoch};
-use goat_attestor::fah::{
-    FahClient, FixtureHttp, HttpGet, default_fixtures_dir, parse_user_stats,
-};
-use goat_attestor::merkle::{Leaf, MerkleTree, hash_pair, leaf_hash, verify};
+use goat_attestor::challenger::{evaluate_batch, ChallengeDecision, ChallengePolicy, Challenger};
+use goat_attestor::fah::{default_fixtures_dir, parse_user_stats, FahClient, FixtureHttp, HttpGet};
+use goat_attestor::merkle::{hash_pair, leaf_hash, verify, Leaf, MerkleTree};
 use goat_attestor::proposer::{build_epoch_batch, daily_epoch_id};
+use goat_attestor::proposer::{enrollment_epoch_id, is_enrollment_epoch};
 use goat_attestor::registry::{WorkerEntry, WorkerRegistry};
-use goat_attestor::relayer::{
-    BindRelayRequest, router_for, validate_bind_request,
-};
+use goat_attestor::relayer::{router_for, validate_bind_request, BindRelayRequest};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -63,8 +57,7 @@ struct CountingHttp {
 
 impl HttpGet for CountingHttp {
     fn get(&self, _url: &str) -> Result<(u16, String), goat_attestor::FahError> {
-        self.n
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok((200, self.body.to_string()))
     }
 }

@@ -8,8 +8,9 @@ import {WorkerBinding} from "./WorkerBinding.sol";
 import {IDisputeResolver} from "./IDisputeResolver.sol";
 import {MerkleProof} from "openzeppelin-contracts/contracts/utils/cryptography/MerkleProof.sol";
 
-/// Optimistic, permissionless settlement of FAH score-delta payouts (spec 2026-07-13 +
-/// FAH-attribution plan 2026-07-14: baseline via first claim, time-based capPerDay).
+/// Optimistic, permissionless settlement of FAH score-delta payouts (the
+/// "GOAT Optimistic Settlement — Consolidated Design" spec, plus the
+/// "FAH Attribution — Implementation Plan": baseline via first claim, time-based capPerDay).
 contract EpochSettlement {
     error NotSafe();
     error NotResolver();
@@ -122,9 +123,14 @@ contract EpochSettlement {
         address resolver_,
         address watcher_
     ) {
+        // resolver_ is checked here, not left for a post-deploy setResolver: the fraud-challenge
+        // path is the only thing that makes optimistic settlement safe, and proposeBatch is
+        // permissionless from the first block. A live settlement with no resolver is a window in
+        // which a fraudulent root cannot be challenged.
         if (
             safe_ == address(0) || address(goat_) == address(0) || address(escrow_) == address(0)
                 || address(registry_) == address(0) || address(binding_) == address(0) || watcher_ == address(0)
+                || resolver_ == address(0)
         ) revert BadArg();
         if (holdbackBps_ > 10_000 || rate_ == 0) revert BadArg();
         safe = safe_;
@@ -274,6 +280,24 @@ contract EpochSettlement {
         if (!ok) revert TransferFailed();
     }
 
+    /// @notice HoldbackEscrow jobId for this lane: one job per (epoch, worker), never shared.
+    /// @dev `HoldbackEscrow.credit` reverts `AlreadyReleased()` once a jobId has been
+    /// released, `releaseAfterDeadline` is permissionless, and `released` is never cleared.
+    /// Crediting a whole epoch under one shared jobId therefore let the first worker to
+    /// collect their own holdback brick `claimPayout` for every co-worker of that epoch who
+    /// had not yet claimed. Splitting the id per worker removes that coupling rather than
+    /// special-casing it: no worker's release can reach another's credit, and
+    /// `AlreadyReleased` becomes structurally unreachable from `claimPayout` — each id is
+    /// credited exactly once, since `claimed[epoch][worker]` is set before the credit and
+    /// short-circuits every later call for the same pair. It also bounds `_release`'s
+    /// per-job worker loop to length 1 on this lane. Escrow views (`holdbackOf`,
+    /// `jobDeadline`, `jobReleased`) and `release`/`releaseAfterDeadline` must be called
+    /// with this same id — `bytes32(epoch)` addresses nothing on this lane.
+    /// Callers off-chain: `keccak256(abi.encode(uint256 epoch, address worker))`.
+    function _holdbackJobId(uint256 epoch, address worker) internal pure returns (bytes32) {
+        return keccak256(abi.encode(epoch, worker));
+    }
+
     /// @notice Pull-claim GOAT against a finalized batch leaf.
     /// Baseline (first claim ever): mint 0, stamp watermark + lastClaimTime (INV-1).
     /// Later claims: time-based GOAT rate cap (capPerDay), non-forfeiting score watermark.
@@ -356,7 +380,7 @@ contract EpochSettlement {
         if (liquid > 0) goat.mint(worker, liquid);
         if (hb > 0) {
             goat.mint(address(escrow), hb);
-            escrow.credit(bytes32(epoch), worker, hb, uint64(block.timestamp) + holdbackBackstop);
+            escrow.credit(_holdbackJobId(epoch, worker), worker, hb, uint64(block.timestamp) + holdbackBackstop);
         }
         emit Claimed(epoch, worker, liquid, hb, newCumulative);
     }

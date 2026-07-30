@@ -256,7 +256,7 @@ impl<'a, C: ChainClient + ?Sized, H: HttpGet> Challenger<'a, C, H> {
 mod tests {
     use super::*;
     use crate::chain::MockChain;
-    use crate::fah::{FixtureHttp, default_fixtures_dir};
+    use crate::fah::{default_fixtures_dir, FixtureHttp};
     use crate::proposer::{enrollment_epoch_id, is_enrollment_epoch};
     use crate::registry::WorkerEntry;
     use std::time::Duration;
@@ -378,7 +378,11 @@ mod tests {
             .unwrap();
 
         let http = FixtureHttp::new(default_fixtures_dir());
-        let fah = FahClient::new(http, "https://api.foldingathome.org", Duration::from_millis(0));
+        let fah = FahClient::new(
+            http,
+            "https://api.foldingathome.org",
+            Duration::from_millis(0),
+        );
         let mut reg = WorkerRegistry::new();
         reg.upsert(WorkerEntry {
             wallet: "0x00000000000000000000000000000000000000A1".into(),
@@ -395,10 +399,7 @@ mod tests {
             evidence_dir: dir.path().to_path_buf(),
         };
         // Public alice score is 51022340; malicious enrollment proposes 0.
-        let proposed = vec![(
-            "0x00000000000000000000000000000000000000A1".into(),
-            0u128,
-        )];
+        let proposed = vec![("0x00000000000000000000000000000000000000A1".into(), 0u128)];
         let d = c.review_epoch(epoch, &reg, &proposed).unwrap();
         assert!(
             matches!(
@@ -427,7 +428,11 @@ mod tests {
             .unwrap();
 
         let http = FixtureHttp::new(default_fixtures_dir());
-        let fah = FahClient::new(http, "https://api.foldingathome.org", Duration::from_millis(0));
+        let fah = FahClient::new(
+            http,
+            "https://api.foldingathome.org",
+            Duration::from_millis(0),
+        );
         let mut reg = WorkerRegistry::new();
         reg.upsert(WorkerEntry {
             wallet: "0x00000000000000000000000000000000000000A1".into(),

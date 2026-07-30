@@ -1,0 +1,9 @@
+{
+  "chainId": 84532,
+  "epochHoldbackEscrow": null,
+  "epochSettlement": null,
+  "founderResolver": null,
+  "workerBinding": null,
+  "workerBindingDeployBlock": null,
+  "note": "Placeholder until Stream B testnet-up.ps1 deploys EpochSettlement. G-B1: set workerBindingDeployBlock from WorkerBinding create receipt (sync-env writes WORKER_BINDING_DEPLOY_BLOCK)."
+}

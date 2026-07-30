@@ -10,9 +10,9 @@
 > §2 for the per-module CANON/ORACLE/PORT/ARCHIVE map.
 
 Production Rust port of the Phase 3 reference implementation (Items 1–4), with the
-AI-response-16 specification amendments applied and the two MVP-0 build obligations
-closed: **real ML-DSA-65** signing (R-CAP1) and a **deterministic-serialization HLL** for
-coverage counting (R-MAT1).
+specification amendments catalogued under [Amendments applied](#amendments-applied)
+below and the two MVP-0 build obligations closed: **real ML-DSA-65** signing (R-CAP1)
+and a **deterministic-serialization HLL** for coverage counting (R-MAT1).
 
 ## Layout & the layer boundary
 
@@ -37,7 +37,7 @@ The protocol/device boundary is a **compile-time property**: `goat-protocol` has
 dependency on `goat-backends`, so a protocol module physically cannot `use goat_backends`.
 The neutrality auditor enforces the lint-time half (`if it names a device type, it's wrong`).
 
-## Amendments applied (design note 16)
+## Amendments applied
 
 - **A-1** `observed_compute_equiv` (renamed from the device-typed `observed_gpu_equiv`);
   the auditor now catches device terms as identifier sub-tokens.
@@ -84,3 +84,4 @@ cargo fmt --all -- --check                                   # format gate
 
 CI enforces the neutrality + conformance + lint + format gates across all protocol-layer
 crates. See `ACCESSIBILITY.md` for the standing broad-accessibility consideration.
+

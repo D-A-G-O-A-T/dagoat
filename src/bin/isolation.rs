@@ -1,4 +1,4 @@
-//! Host-edge execution isolation supervisor (execution-isolation / Vector 1.1).
+//! Host-edge execution isolation supervisor (Council-6 / Vector 1.1).
 //!
 //! Spawns `goat-worker` as a **separate OS process**, never runs payload code in-process.
 //! Device-agnostic: no device-type branches. Fail-closed when isolation is unavailable.

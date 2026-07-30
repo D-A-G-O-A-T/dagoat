@@ -1,13 +1,16 @@
-# Standalone crate — kept independent of the root goat-core workspace (the repo-root Cargo.toml)
+# Standalone crate â€” kept independent of the root goat-core workspace (the internal root workspace Cargo.toml)
 # so `cargo check`/`cargo build` here never pull in the spine's dependency graph.
 [workspace]
 
 [package]
 name = "dagoat"
 version = "0.1.0"
-description = "D.A. G.O.A.T. — the GoatCoin desktop node (alpha)."
+description = "D.A. G.O.A.T. â€” the GoatCoin desktop node (alpha)."
 authors = ["GoatCoin"]
 edition = "2021"
+# Declared, not omitted: an absent `license` key is not "unlicensed by default",
+# it is a published crate manifest that says nothing at all.
+license = "MIT OR Apache-2.0"
 
 # The Tauri app is a library (so mobile targets can link it) plus a thin main.rs binary.
 [lib]
@@ -23,7 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 # FAH adapter (S6): async runtime promoted from dev-dep; WebSocket control of FAHClient v8
-# local API (plain ws:// — no TLS backend, so no openssl); stats polling over rustls only.
+# local API (plain ws:// â€” no TLS backend, so no openssl); stats polling over rustls only.
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "sync"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 futures-util = "0.3"
@@ -31,16 +34,17 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 sha2 = "0.11"
 dirs = "6"
 tauri-plugin-store = "2.4.3"
+tauri-plugin-opener = "2"
 
 # --- Password-protected multi-wallet with Rust-side Ethereum signing ---
 # The private key NEVER crosses the IPC bridge into JS: alloy signs in Rust and
 # only the signature / signed raw tx is returned. See
-# docs/superpowers/specs/2026-07-13-stronghold-wallet-design.md
+# the "Password-Protected Multi-Wallet with Rust-Side Signing — Design" spec
 #
 # Stronghold is used **directly** from Rust (iota_stronghold), not via the JS
-# tauri-plugin-stronghold (which was a decoy — JS never calls Stronghold). Each
+# tauri-plugin-stronghold (which was a decoy â€” JS never calls Stronghold). Each
 # wallet is ONE Stronghold snapshot, encrypted under a snapshot key derived from
-# that wallet's own password via Argon2id (spec §2 / §4), so each wallet is gated
+# that wallet's own password via Argon2id (spec Â§2 / Â§4), so each wallet is gated
 # by its OWN password. The secp256k1 key is a record in that snapshot's store.
 iota_stronghold = "2"
 # alloy = the Ethereum signer + tx/typed-data encoding (secp256k1 via k256).
@@ -51,7 +55,16 @@ alloy = { version = "2", features = [
     "dyn-abi",      # EIP-712 TypedData
     "eip712",       # eip712_signing_hash across signer modules
 ] }
-argon2 = "0.5"                 # password KDF (Argon2id → snapshot key)
+argon2 = "0.5"                 # password KDF (Argon2id â†’ snapshot key)
 zeroize = "1"                  # wipe key bytes after use
 rand = "0.9"                   # salt / snapshot-filename generation
 hex = "0.4"
+
+# T32/B7b: schema-verified deletion of the managed FAH client's own account-link rows from its
+# `client.db` (SQLite) — see workbackend/fah.rs `clear_account_link`/`unlink_managed_account`.
+# `bundled` statically links SQLite's own C amalgamation (via the `cc` crate, already a transitive
+# build dependency through `ring`/rustls) so this needs no system sqlite3 on the end user's
+# machine — the alternative (shelling out to a `sqlite3` CLI) cannot be relied on to exist on an
+# arbitrary Windows install, and hand-editing the SQLite B-tree file format without a real SQLite
+# engine risks corrupting the file, which the design explicitly forbids.
+rusqlite = { version = "0.40", features = ["bundled"] }

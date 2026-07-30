@@ -1,3 +1,120 @@
+# =============================================================================
+# READ THIS BEFORE TRUSTING -- OR DISBELIEVING -- A BADGE HERE.
+#
+# WHAT HAS ACTUALLY RUN. Measured 2026-07-29 against the PUBLISHED repository's
+# own Actions history, rather than inferred from this tree:
+#
+#   * SIX runs of this workflow exist. Three on 2026-07-09 (the first RED, the
+#     next two green) and three on 2026-07-17 (all green, one of them a
+#     pull_request run on the import branch).
+#   * All six ran a THREE-JOB revision of this file -- goat-core, cargo-audit,
+#     goatcoin-rs. There have only ever been two revisions on the published
+#     branch, both landed 2026-07-09: 61 lines at the initial public release, and
+#     70 lines after a same-day "build goat-worker before tests" fix, which is
+#     what the published main branch still holds today. (Run 1 is the red one and
+#     ran the 61-line file; that fix is almost certainly what greened run 2.)
+#   * Everything that is not one of those three jobs has NEVER been executed by
+#     a runner: both attestor jobs, the live-Anvil hazard job, the two jobs added
+#     2026-07-29 for gate steps 8 and 9, the desktop job, every count assertion
+#     in this file, and the ENTIRE `contracts` workflow, which does not exist on
+#     the published branch at all.
+#
+# THIS BANNER USED TO SAY "IT HAS NEVER RUN", AND THAT WAS WRONG. It was true of
+# the INTERNAL repository -- the git toplevel on this machine is `F:/`, so this
+# file sits three levels below the root while Actions only discovers workflows at
+# `<repo-root>/.github/workflows/`, and `git remote -v` is empty -- and FALSE of
+# the published mirror, where the export places this file at the mirror's ROOT
+# and Actions has been finding it since the initial public release. The third
+# reason once given, that the sources are untracked, has also stopped applying:
+# `tools/export-baseline.txt` publishes the attestor `src/` tree. Corrected
+# 2026-07-29.
+#
+# The claim that survives measurement is narrower, and is the one to repeat: THE
+# CURRENT REVISION OF THIS FILE IS UNPROVEN, and the next publish is its first
+# test. A green badge from 2026-07-17 says nothing about any job added since.
+#
+# WHAT RUNS TODAY REGARDLESS: `tools/goat-attestor/run-full-gate.ps1`, executed
+# by a human on the dev machine. It is a TEN-step gate: the unit suite, clippy,
+# the #[ignore]d live-Anvil hazard tests (against a node it starts and reaps),
+# the contract suite, the contracts/ node parity fixtures (the JavaScript half of
+# the cross-language feeScheduleHash pair), an independent EIP-170 size
+# assertion, the migration freeze hash, auxiliary-script integrity, script
+# call-site ABI consistency, and the role code-hash canary.
+#
+# HOW THE TEN MAP ONTO CI (audited 2026-07-29 -- read this before claiming
+# coverage, in either direction):
+#
+#   1 unit suite (786)      -> `goat-attestor` job, `cargo test`
+#   2 clippy                -> `goat-attestor` job, `cargo clippy -D warnings`
+#   3 anvil hazard (19)     -> `goat-attestor-anvil` job, below
+#   4 forge test (248)      -> **`contracts.yml`**, count-pinned there
+#   5 node parity (10)      -> **`contracts.yml`**, count-pinned there
+#   6 EIP-170 size guard    -> **`contracts.yml`**, independent byte assertion
+#   7 migration freeze      -> `goat-attestor` job, via `cargo test`: the freeze
+#                              table lives in `stream_g/store.rs`
+#                              (`every_migration_is_byte_identical`), so the Rust
+#                              suite already asserts it. Do NOT duplicate the
+#                              hash table into YAML -- a third copy is a third
+#                              thing that can drift.
+#   8 aux-script integrity  -> `aux-scripts` job, below. MIRRORED 2026-07-29, and
+#                              PARTIALLY: it judges the 13 `.ps1` files the export
+#                              publishes, not the 15 the gate sweeps. See that
+#                              job's header for which two are absent and why the
+#                              floor CI passes therefore differs from the default.
+#   9 script call-site ABI  -> `aux-scripts` job, below, fed by the
+#                              `aux-abi-universe` job's `contracts/out`.
+#  10 role code-hash canary -> `aux-scripts` job, below. MIRRORED 2026-07-29 by the
+#                              same route: its frozen table of four
+#                              `SHA-256(rawMetadata)` literals was inline in
+#                              `run-full-gate.ps1`, and pasting it into YAML would
+#                              have been the second-implementation defect steps 8
+#                              and 9 were extracted to avoid -- so it was extracted
+#                              too, into `check-role-code-hashes.ps1`, and both the
+#                              gate and this workflow call that one file.
+#
+# SO CI NOW COVERS ALL TEN STEPS -- but step 8 over 13 of the 15 files the gate
+# sweeps, and NONE of the ten has ever been executed by a runner in this revision.
+# "Ten of ten" is a statement about wiring, not about evidence. Do not upgrade it
+# to a claim about coverage until a run exists.
+#
+# HOW STEPS 8, 9 AND 10 GOT MIRRORED, and why it is two jobs and not one step.
+#
+# The blocker was never effort: pasting their logic into YAML would create a
+# SECOND implementation of a check whose entire value is being exact, and this
+# repository already carries that scar -- the migration freeze table lives in two
+# places and needed a test asserting the two agree. So the logic was extracted
+# into `tools/goat-attestor/check-aux-scripts.ps1` first, `run-full-gate.ps1` was
+# changed to shell out to it, and CI now runs THE SAME FILE with the same
+# defaults. Nothing about either check is expressed in this workflow; what is
+# expressed here is which host it runs on and how its exit code is read.
+#
+# THE HOST IS NOT A DETAIL FOR STEP 8. It asserts that each `.ps1` parses AND
+# means the same thing under UTF-8 as under the encoding the host actually uses,
+# and its whole premise is that **Windows PowerShell 5.1 reads a BOM-less file as
+# the ANSI code page**. Under `pwsh` -- on any OS -- BOM-less files are read as
+# UTF-8, the two decodings agree BY CONSTRUCTION, and the check passes on a file
+# that is broken for every real operator. That is a check that cannot fail, the
+# defect class this repository has now recorded nine times. Hence
+# `windows-latest` with `shell: powershell`, and hence the assertion step that
+# fails the job if the host it is actually running on cannot make step 8(b)
+# disagree with itself.
+#
+# STEP 9 DOES NOT SHARE THAT CONSTRAINT -- its extraction is ASCII pattern
+# matching and its lookup is JSON -- but it does need `contracts/out`, and
+# `foundry-toolchain` does not document Windows: as of its v1.7.0 tag its README
+# names no supported platforms at all and its only example is `ubuntu-latest`. So
+# Foundry runs where it is demonstrated, both checks run on the host where step 8
+# is meaningful, and `out/` crosses between them as an artifact. Running step 9
+# under `pwsh` on Linux was the other option and was rejected: it would put the
+# only implementation of the check on a host nothing in this repository has ever
+# executed it on, and there is no `pwsh` on the dev machine to try it with first.
+#
+# DO NOT WRITE, ANYWHERE, THAT THE HAZARD TESTS ARE "COVERED BY CI". They are
+# covered by that script and by nothing else. Everything here is what coverage
+# WOULD look like once the blockers above are fixed; until then it is a
+# specification, not a gate.
+# =============================================================================
+
 # Phase-0 P0-3 + supply-chain: single CI story for the deploy spine.
 # Runs on every PR/push. Advisory check uses cargo-audit when installed (continue-on-error
 # until the first clean baseline is established on the runner).
@@ -68,3 +185,461 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: test goatcoin-rs
         run: cargo test --workspace
+
+  # goat-attestor: standalone package (own [workspace], not a member of the root spine).
+  # NOTE: `cargo fmt --all -- --check` is intentionally NOT gated here — the tree is not
+  # rustfmt-clean today (74 diff hunks across 12 files verified 2026-07-20). Wiring it would
+  # fail on the first push. Re-check with `cargo fmt --all -- --check` before gating it.
+  #
+  # !! THIS JOB IS EXPECTED TO GO RED ON THE FIRST PUBLISH, and the reason is a
+  # publication-surface decision rather than a code defect.
+  #
+  # MEASURED, not argued. A tree holding exactly the 1,349 paths the export
+  # accepts was assembled and `cargo test` run inside it, 2026-07-29. Result:
+  # the crate COMPILES CLEANLY -- which retires the "the sources are untracked"
+  # blocker this file used to carry -- and reports
+  # `781 passed; 5 failed; 19 ignored`.
+  #
+  # THE FIVE HAVE TWO DIFFERENT CAUSES, and that matters because it means one fix
+  # does not clear them. An earlier revision of this comment said all five read the
+  # baseline. That was reasoned from moving one file aside, and it was wrong about
+  # the fifth. Corrected here from the full-checkout run:
+  #
+  #   FOUR need `tools/export-baseline.txt`, the curator's per-file publication
+  #   record. They PANIC when it is absent, on purpose: "the baseline vanished" and
+  #   "every published manifest is correctly licensed" must not produce the same
+  #   green run. The curator excludes that file by an explicit tree rule.
+  #     license_audit::every_published_cargo_manifest_declares_the_dual_licence
+  #     license_audit::both_licence_files_are_published_and_agree_on_the_copyright_holder
+  #     license_audit::the_readme_points_a_reader_at_both_licence_files
+  #     citation_audit::no_internal_doc_tree_path_citations
+  #
+  #   ONE needs `DOC_INDEX.md`, the title-to-path resolver, and fails with "the
+  #   table is the only resolver; it is not optional":
+  #     citation_audit::spec_citations_resolve_through_doc_index
+  #   That file is withheld DELIBERATELY and the curator asserts its absence as a
+  #   named PASS check. It is also the one file that could not be published without
+  #   violating the rule the sibling test enforces, since resolving a title is
+  #   precisely mapping it to an internal-tree path. So publishing the baseline
+  #   clears four of five, and the fifth has no fix on the publication side.
+  #
+  # NOT SILENCED. Adding `--skip license_audit --skip citation_audit` here would
+  # turn a loud red into a quiet narrowing of exactly the audits that exist to
+  # prevent one, and this repository has recorded that failure shape nine times.
+  # The decision -- publish the baseline, accept the red, or something else -- is
+  # a founder call. It is recorded here, not taken.
+  goat-attestor:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/goat-attestor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/goat-attestor
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        run: cargo test
+
+  # ---------------------------------------------------------------------------
+  # goat-attestor-anvil: the sixteen #[ignore]d live-Anvil hazard tests.
+  #
+  # NOT LIVE --- see the banner at the top of this file. Mirrors what
+  # `tools/goat-attestor/run-full-gate.ps1` step 3 does today.
+  #
+  # These sixteen are INVISIBLE to `cargo test --lib`: it reports them as
+  # "16 ignored" and exits 0. A change that breaks all sixteen ships green
+  # unless something runs them explicitly. That is the entire point of this job.
+  #
+  # THE COMMAND FORM MATTERS, in three ways that each cost real debugging time:
+  #
+  #   * NOT `cargo test --package goat-attestor -- --ignored`. That is what the
+  #     consultant directive says in four places and it DOES NOT WORK ---
+  #     `error: package ID specification 'goat-attestor' did not match any
+  #     packages`. `tools/goat-attestor/Cargo.toml` declares its OWN
+  #     `[workspace]`, so it is not a member of the root package (`goat-core`)
+  #     and cargo cannot see it by name from anywhere. Hence
+  #     `working-directory:` plus a bare `--lib`.
+  #   * `--test-threads=1` is REQUIRED, not a tidiness preference. The three
+  #     legacy `rpc_chain.rs` tests all point at the single node at `RPC_URL`
+  #     and share a per-instance `send_lock`, and
+  #     `stream_g_anvil_harness_owns_a_non_default_port_and_reaps_its_node`
+  #     polls its old ephemeral port after releasing `HARNESS_LOCK`.
+  #   * `cast` IS REQUIRED, not just `anvil` and `forge`. `anvil_harness.rs`
+  #     shells out to `cast calldata` from `cast_calldata()`, reached via
+  #     `stage_cluster()` from exactly three of the sixteen:
+  #       - stream_g_anvil_v1_enroll_nonce_advance_invalidates_the_snapshot_and_fails_closed
+  #       - stream_g_anvil_link_nonce_advance_invalidates_the_snapshot_and_fails_closed
+  #       - stream_g_anvil_nonce_drift_after_reservation_leaves_a_row_the_sweeper_resolves
+  #     foundry-toolchain installs all three, so this is a note against anyone
+  #     "slimming" the install to anvil+forge later.
+  #
+  # The harness starts and reaps its OWN anvil on an ephemeral port for the
+  # thirteen Stream G tests; the `RPC_URL` node below exists for the three
+  # legacy `rpc_chain.rs` tests, which assume something is already listening.
+  # It is deliberately started WITHOUT `--disable-code-size-limit`, matching the
+  # harness as of Wave 1: with the limit lifted, an over-24,576-byte contract
+  # deploys happily and the suite stays green while shipping something Base
+  # Sepolia will refuse.
+  goat-attestor-anvil:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/goat-attestor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to the exact release the harness's documented behaviour was
+      # verified against (anvil/forge/cast 1.7.1, commit 4072e487). Anvil's
+      # cheatcode surface --- anvil_setCode, anvil_setStorageAt, the
+      # CreateContractSizeLimit error string --- is not covered by semver.
+      #
+      # THE TWO VERSIONS HERE ARE DIFFERENT THINGS, and conflating them was a
+      # first-push blocker until 2026-07-29. `@v1.7.0` is the ACTION's tag;
+      # `version:` is the FOUNDRY release it installs. This line used to read
+      # `foundry-rs/foundry-toolchain@v1.7.1`, and THAT ACTION TAG DOES NOT EXIST
+      # -- the action's tags run ... v1.6.0, v1.7.0, v1.8.0, v1.9.0, v1.9.1, with
+      # no v1.7.1 among them, so every run of this job would have died at setup
+      # with "Unable to resolve action", and the Foundry version it was trying to
+      # pin was never communicated to the action at all. Foundry v1.7.1 does exist
+      # (published 2026-05-08, the same build the dev machine reports), and the
+      # `version:` input is how you ask for it.
+      - uses: foundry-rs/foundry-toolchain@v1.7.0
+        with:
+          version: v1.7.1
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/goat-attestor
+      - name: Build contracts (the harness shells out to forge script)
+        run: forge build
+        working-directory: contracts
+      - name: Start anvil for the three legacy rpc_chain.rs tests
+        run: |
+          anvil --port 8545 --chain-id 31337 --silent &
+          for i in $(seq 1 60); do
+            if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "anvil never answered on 8545" >&2
+          exit 1
+        working-directory: contracts
+      # THE COUNT IS PINNED, and that is the point of this step rather than a
+      # decoration on it. `cargo test --lib -- --ignored` exits 0 when it runs
+      # ZERO tests: if the `#[ignore]` attributes were removed, or a filter
+      # silently matched nothing, or the harness refused to start its node and
+      # every test bailed out early, the command still succeeds and the badge
+      # still goes green. The local gate pins this ($ExpectedIgnoredPassed = 19);
+      # CI asserted nothing at all until 2026-07-29. Bump deliberately, in the
+      # commit that adds the test.
+      - name: Live-Anvil hazard suite (count pinned)
+        run: |
+          set -o pipefail
+          cargo test --lib -- --ignored --test-threads=1 | tee hazard.log
+          passed=$(grep -oE 'test result: ok\. [0-9]+ passed' hazard.log | tail -n 1 | grep -oE '[0-9]+')
+          if [ -z "${passed}" ]; then
+            echo "::error::could not parse a 'test result:' line -- a green exit with no parsed result proves nothing"
+            exit 1
+          fi
+          echo "hazard suite passed=${passed} expected=${EXPECTED_HAZARD_TESTS}"
+          if [ "${passed}" != "${EXPECTED_HAZARD_TESTS}" ]; then
+            echo "::error::hazard suite ran ${passed} test(s), expected ${EXPECTED_HAZARD_TESTS} -- these are the tests that are INVISIBLE to a normal 'cargo test --lib' run; a drop here is silent by default"
+            exit 1
+          fi
+        env:
+          RPC_URL: http://127.0.0.1:8545
+          # Keep in lockstep with $ExpectedIgnoredPassed in run-full-gate.ps1.
+          EXPECTED_HAZARD_TESTS: "19"
+
+  # ---------------------------------------------------------------------------
+  # aux-abi-universe: builds `contracts/out` on Linux, for the Windows job below.
+  #
+  # Gate step 9 needs the compiled ABIs -- 132 artifacts carrying 1,143 distinct
+  # signatures, measured 2026-07-29 -- and needs nothing else from Foundry. Gate
+  # step 8 needs a host that decodes a BOM-less file as the ANSI code page, which
+  # means `windows-latest`. `foundry-toolchain` does not document Windows (see the
+  # banner). So Foundry runs here, both checks run there, and `out/` travels as an
+  # artifact.
+  # ---------------------------------------------------------------------------
+  aux-abi-universe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # `@v1.7.0` is the ACTION tag; `version:` is the Foundry release. See the
+      # note in `goat-attestor-anvil` -- `@v1.7.1` is not a tag that exists.
+      - uses: foundry-rs/foundry-toolchain@v1.7.0
+        with:
+          version: v1.7.1
+      - name: Build the ABI universe
+        run: forge build
+        working-directory: contracts
+      # FAIL HERE RATHER THAN LET AN EMPTY UNIVERSE TRAVEL. The child's own floors
+      # would catch a collapsed `out/` on the other side of the artifact, but the
+      # finding would read as a script defect instead of as a build that produced
+      # nothing. 100 against 132 measured -- wide on purpose, because `forge build`
+      # output varies legitimately with the OZ/forge-std version.
+      - name: Assert the universe is not empty before shipping it
+        working-directory: contracts
+        run: |
+          n=$(find out -name '*.json' | wc -l)
+          echo "contracts/out JSON artifacts: ${n}"
+          if [ "${n}" -lt 100 ]; then
+            echo "::error::only ${n} JSON artifact(s) under contracts/out, expected at least 100 (132 measured 2026-07-29) -- the ABI universe step 9 resolves against would be collapsed"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contracts-out
+          path: contracts/out
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # aux-scripts: gate steps 8, 9 and 10, by running THE SAME FILES the local gate
+  # runs.
+  #
+  # `tools/goat-attestor/check-aux-scripts.ps1` implements checks 8 and 9;
+  # `check-role-code-hashes.ps1` implements check 10. Each holds its own pins in
+  # its own `param()` block. Nothing about any of the three is restated in this
+  # workflow. What this job decides is the HOST, and how each child's exit code is
+  # read.
+  #
+  # WHY `shell: powershell` AND NOT `pwsh`: see the banner. Under any UTF-8-default
+  # host, step 8(b) compares UTF-8 against UTF-8, cannot fail, and passes a file
+  # that is broken for every real operator. The first step below fails the job if
+  # the host it is actually running on has that property, so a future edit that
+  # switches the shell cannot quietly turn this into a check that always passes.
+  #
+  # WHY ONE STEP FOR BOTH CHECKS. The local gate calls the child twice and keeps
+  # two summary rows so neither check can hide inside the other's verdict. That
+  # property is preserved here by asserting each check's own GATE-DETAIL status
+  # independently. It is one step rather than two so that BOTH invocations always
+  # run: as two steps, a step-8 failure would skip step 9 and a red run would
+  # report half of what it knows.
+  #
+  # !! THE FLOOR THIS JOB PASSES IS 14 AND THE SCRIPT'S DEFAULT IS 16, and that is
+  # not a relaxation. The gate sweeps the internal tree; CI sweeps the PUBLISHED
+  # tree, and the export withholds exactly two `.ps1` files -- the curator itself,
+  # `tools/curate-public-export.ps1`, and a run-log artefact under `desktop/`.
+  # Measured 2026-07-29: 16 locally, 14 in the export baseline. Both counts moved
+  # twice that day, together: +1 when step 10 was extracted into
+  # `check-role-code-hashes.ps1`, and +1 for `smoke-standup.ps1`, which executes
+  # the dev standup against an ephemeral anvil. Each lands in the swept set like
+  # every other `.ps1` here. All four scripts the child NAMES as required are
+  # published, so the guard that matters -- that the files which have actually
+  # shipped defects are in scope -- is unweakened. The count is asserted EXACTLY
+  # here, not floored, so publishing a fifteenth `.ps1` reds this job until the
+  # number is bumped deliberately, in that commit.
+  # ---------------------------------------------------------------------------
+  aux-scripts:
+    runs-on: windows-latest
+    needs: aux-abi-universe
+    defaults:
+      run:
+        shell: powershell
+        working-directory: tools/goat-attestor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: contracts-out
+          path: contracts/out
+
+      # THE ARTIFACT LAYOUT IS THE ONE THING HERE THAT DOCUMENTATION DID NOT
+      # SETTLE. upload-artifact v4 uses "the least common ancestor of all the
+      # search paths" as the artifact root, which for a single `contracts/out`
+      # should make entries relative to out/, so downloading with
+      # `path: contracts/out` restores them in place. That reading could not be
+      # confirmed to the standard the rest of this file is held to, so the layout
+      # is ASSERTED rather than assumed. Without this step a wrong layout arrives
+      # as the child's exit 2 further down -- red, but reported as "no ABI
+      # universe" rather than "the artifact landed somewhere else", and the
+      # uploading job has already proved the universe was there.
+      - name: Assert the ABI universe arrived where check 9 reads it
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE 'contracts\out'
+          $n = 0
+          if (Test-Path -LiteralPath $out) {
+            $n = @(Get-ChildItem -LiteralPath $out -Recurse -File -Filter *.json).Count
+          }
+          Write-Output ('contracts/out JSON artifacts: {0}' -f $n)
+          if ($n -lt 100) {
+            Write-Output ('::error::contracts/out holds {0} JSON file(s), expected at least 100. aux-abi-universe asserted at least 100 BEFORE uploading, so this is the artifact layout and not the build. Directories named out, to depth 3:' -f $n)
+            $found = @(Get-ChildItem -LiteralPath $env:GITHUB_WORKSPACE -Recurse -Depth 3 -Directory -Filter out -ErrorAction SilentlyContinue)
+            if ($found.Count -eq 0) { Write-Output '::error::  none found at all' }
+            foreach ($p in $found) { Write-Output ('::error::  {0}' -f $p.FullName) }
+            exit 1
+          }
+          exit 0
+
+      - name: Assert this host can make step 8(b) fail
+        run: |
+          $v = $PSVersionTable
+          Write-Output ('PSEdition        : {0}' -f $v.PSEdition)
+          Write-Output ('PSVersion        : {0}' -f $v.PSVersion)
+          Write-Output ('Encoding.Default : {0}' -f [System.Text.Encoding]::Default.WebName)
+          $bad = New-Object System.Collections.ArrayList
+          if ($v.PSEdition -ne 'Desktop') {
+            [void]$bad.Add(("PSEdition is '{0}', expected 'Desktop' -- this is PowerShell Core, so the job shell is pwsh and not Windows PowerShell 5.1" -f $v.PSEdition))
+          }
+          if ($v.PSVersion.Major -ne 5) {
+            [void]$bad.Add(("PSVersion major is {0}, expected 5" -f $v.PSVersion.Major))
+          }
+          if ([System.Text.Encoding]::Default.WebName -eq 'utf-8') {
+            [void]$bad.Add('this host decodes a BOM-less file as UTF-8, so step 8(b) compares UTF-8 against UTF-8')
+          }
+          if ($bad.Count -gt 0) {
+            foreach ($b in $bad) { Write-Output "::error::$b" }
+            Write-Output '::error::Step 8(b) compares each .ps1 as the HOST decodes it against the same bytes decoded as UTF-8. Where those two decodings agree by construction the comparison cannot fail and a file broken for every real operator passes. Keep this job on windows-latest with shell: powershell (5.1); do not switch it to pwsh and do not move it to ubuntu.'
+            exit 1
+          }
+          Write-Output 'host is Windows PowerShell 5.1 on a non-UTF-8 code page: step 8(b) can fail'
+          exit 0
+
+      - name: Gate steps 8 and 9 (the same script the local gate runs)
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $repo = $env:GITHUB_WORKSPACE
+          $contracts = Join-Path $repo 'contracts'
+          $expectedScripts = 14
+          $checks = @(
+            @{ Name = 'check8'; Label = 'aux script integrity';   Switch = '-Skip9' },
+            @{ Name = 'check9'; Label = 'script ABI consistency'; Switch = '-Skip8' }
+          )
+          $problems = New-Object System.Collections.ArrayList
+          foreach ($c in $checks) {
+            Write-Output ''
+            Write-Output ('======== {0} ({1}) ========' -f $c.Label, $c.Name)
+            $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '.\check-aux-scripts.ps1',
+                   '-RepoRoot', $repo, '-ContractsDir', $contracts,
+                   '-ExpectedAuxScriptsMin', "$expectedScripts", $c.Switch)
+            $out = & powershell.exe @a
+            $code = $LASTEXITCODE
+            foreach ($line in $out) { Write-Output $line }
+
+            $status = $null; $detail = ''; $scope = $null; $vacuous = $false
+            foreach ($line in $out) {
+              if ($line -match ('^GATE-DETAIL\s+' + $c.Name + '\s+(\S+)\s*(.*)$')) {
+                $status = $Matches[1]; $detail = $Matches[2]
+              }
+              if ($line -match '^scope:\s+(\d+)\s+\.ps1 file') { $scope = [int]$Matches[1] }
+              if ($line -match 'VACUOUS in this run') { $vacuous = $true }
+            }
+
+            # THE EXIT CODE IS THE AUTHORITY, and 2 is not 1: "could not check"
+            # must never be reportable as "checked and fine", and must not be
+            # triaged as a finding either.
+            if ($code -eq 2) {
+              [void]$problems.Add(("{0}: COULD NOT RUN (exit 2). No verdict was produced over the whole surface; the [FAIL] line(s) above say what was blocked." -f $c.Label))
+            } elseif ($code -eq 1) {
+              [void]$problems.Add(("{0}: ran and FAILED (exit 1). The [FAIL] line(s) above are the findings." -f $c.Label))
+            } elseif ($code -ne 0) {
+              [void]$problems.Add(("{0}: unexpected exit {1}. The documented contract is 0, 1 or 2 only, so this is the child dying rather than reporting." -f $c.Label, $code))
+            }
+
+            # A ZERO EXIT IS NOT ENOUGH. The child exits 0 when everything it RAN
+            # passed, and reports SKIPPED for a check it did not run -- so without
+            # this arm, passing the wrong switch would record a check that never
+            # happened as a pass.
+            if ($status -ne 'PASS') {
+              $said = 'no GATE-DETAIL line at all'
+              if ($null -ne $status) { $said = $status }
+              [void]$problems.Add(("{0}: exit {1} but the child did not report {2} as PASS -- it said: {3}. A SKIPPED or unreported check must never be recorded as a passed one." -f $c.Label, $code, $c.Name, $said))
+            }
+
+            # The shared walk is what both checks are LOOPS over, and a loop over a
+            # short set is green. Exact, not floored -- see the header.
+            if ($scope -ne $expectedScripts) {
+              $saw = 'no scope line at all'
+              if ($null -ne $scope) { $saw = $scope }
+              [void]$problems.Add(("{0}: swept {1} .ps1 file(s), expected exactly {2}. Either the export's published set changed -- bump this number in the commit that changes it -- or the walk is not reaching what it should." -f $c.Label, $saw, $expectedScripts))
+            }
+
+            if ($vacuous) {
+              [void]$problems.Add(("{0}: the child reported step 8(b) VACUOUS on this host. It printed that warning because its own encoding probe agreed with the assertion step above, which means that step is no longer catching what it was written to catch." -f $c.Label))
+            }
+
+            if ($problems.Count -eq 0) {
+              Write-Output ('{0}: PASS -- {1}' -f $c.Label, $detail)
+            }
+          }
+          if ($problems.Count -gt 0) {
+            foreach ($p in $problems) { Write-Output "::error::$p" }
+            exit 1
+          }
+          Write-Output ''
+          Write-Output 'gate steps 8 and 9: PASS'
+          exit 0
+
+      # STEP 10 -- the role code-hash canary, extracted 2026-07-29 into its own
+      # file for exactly the reason steps 8 and 9 were: its freeze table of four
+      # SHA-256(rawMetadata) literals must exist ONCE. It lives in this job rather
+      # than a new one because it needs the same two things this job already has,
+      # `contracts/out` and a PowerShell host, and nothing that is Windows-specific
+      # -- so it is here for cost, not for correctness.
+      #
+      # THE PINS ARE NOT HERE. `-ContractsDir` is the only argument; the table, the
+      # role map, the payload path and the expected role count are all param
+      # defaults in the child. A row passed from this workflow would be a row the
+      # local gate does not honour, which is the same defect one level down.
+      - name: Gate step 10 (the same script the local gate runs)
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $repo = $env:GITHUB_WORKSPACE
+          $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '.\check-role-code-hashes.ps1',
+                 '-ContractsDir', (Join-Path $repo 'contracts'))
+          $out = & powershell.exe @a
+          $code = $LASTEXITCODE
+          foreach ($line in $out) { Write-Output $line }
+
+          $status = $null; $detail = ''
+          foreach ($line in $out) {
+            if ($line -match '^GATE-DETAIL\s+check10\s+(\S+)\s*(.*)$') {
+              $status = $Matches[1]; $detail = $Matches[2]
+            }
+          }
+          $problems = New-Object System.Collections.ArrayList
+          if ($code -eq 2) {
+            [void]$problems.Add('role code-hash canary: COULD NOT RUN (exit 2). A prerequisite is missing -- most likely contracts/out or the deployment payload. That is neither a finding nor a pass.')
+          } elseif ($code -eq 1) {
+            [void]$problems.Add('role code-hash canary: ran and FAILED (exit 1). A pinned hash moved, or a pin describes something the manifest does not. The [FAIL] line(s) above name which.')
+          } elseif ($code -ne 0) {
+            [void]$problems.Add(("role code-hash canary: unexpected exit {0}. The documented contract is 0, 1 or 2 only, so this is the child dying rather than reporting." -f $code))
+          }
+          if ($status -ne 'PASS') {
+            $said = 'no GATE-DETAIL line at all'
+            if ($null -ne $status) { $said = $status }
+            [void]$problems.Add(("role code-hash canary: exit {0} but the child did not report check10 as PASS -- it said: {1}. An unreported check must never be recorded as a passed one." -f $code, $said))
+          }
+          if ($problems.Count -gt 0) {
+            foreach ($p in $problems) { Write-Output "::error::$p" }
+            exit 1
+          }
+          Write-Output ('gate step 10: PASS -- {0}' -f $detail)
+          exit 0
+
+  # desktop: Vite + React + Tauri v2 shell. `npm test` runs `vitest run` (single-run, not watch).
+  desktop:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: test
+        run: npm test

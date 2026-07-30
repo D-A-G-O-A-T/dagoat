@@ -17,3 +17,21 @@ runs = 512
 [invariant]
 runs = 512
 depth = 25
+# Load-bearing. Foundry defaults this to FALSE, which silently DISCARDS any
+# handler call that reverts -- including a reverting `require` that encodes a
+# safety claim. With it false, the four economic-safety post-conditions in
+# StreamGInvariants' handler (fee only on success / goat moved / no fee on
+# fail / no goat on fail) could never fail the suite: a deliberate
+# `require(false, ...)` produced 4,259 discarded handler reverts while the
+# suite still reported "ok, 6 passed". It also hid a stranded test mutation --
+# a `require(false)` left in a handler by an interrupted agent run kept
+# `forge test` green at 245/245.
+# Do not set this back to false to make a red suite pass. A handler that
+# reverts on genuinely-unreachable input is fixed by tightening its
+# PRE-conditions, never by discarding its POST-conditions.
+fail_on_revert = true
+
+[profile.fast]
+via_ir = false
+optimizer = true
+optimizer_runs = 200

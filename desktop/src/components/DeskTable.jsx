@@ -13,44 +13,56 @@ import { isOwnDesk, POSTED_BID_COPY } from "../market.js";
 /// a debug column. Everyone else sees Desk / Bid / Status only.
 export default function DeskTable({ rows, myAddress, bestOpenAddress, showDepth = false }) {
   if (rows.length === 0) {
-    return <p className="placeholder-note">No buy desks yet — be the first donor to open one below.</p>;
+    return <p className="placeholder-note">No buy desks yet — be the first donor in Be a donor.</p>;
   }
 
   return (
-    <table className="pending-table desk-table">
-      <caption className="muted desk-table__caption">
+    <div className="desk-table-wrap">
+      <p className="muted desk-table__caption">
         Every bid below is {POSTED_BID_COPY}.{showDepth ? " Depth column is founder-only (debug)." : ""}
-      </caption>
-      <thead>
-        <tr>
-          <th>Desk</th>
-          <th>Bid</th>
-          {showDepth && <th>Depth (debug)</th>}
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => {
-          const mine = isOwnDesk(row, myAddress);
-          const best = row.address === bestOpenAddress;
-          return (
-            <tr key={row.address} className={best ? "desk-table__row--best" : ""}>
-              <td>
-                {row.displayName}
-                {best && <span className="desk-table__tag desk-table__tag--best">Best bid</span>}
-                {mine && <span className="desk-table__tag desk-table__tag--mine">Your desk</span>}
-              </td>
-              <td>1 GOAT = {testnetAmount(formatBid(row.bid), "USDT")}</td>
-              {showDepth && <td>{testnetAmount(formatUsdt(row.depth), "USDT")}</td>}
-              <td>
-                <span className={`desk-table__badge ${row.isOpen ? "desk-table__badge--open" : "desk-table__badge--closed"}`}>
-                  {row.isOpen ? "Open" : "Closed"}
-                </span>
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+      </p>
+      <table className="desk-table">
+        <thead>
+          <tr>
+            <th>Desk</th>
+            <th>Bid</th>
+            {showDepth && <th>Depth (debug)</th>}
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const mine = isOwnDesk(row, myAddress);
+            const best = row.address === bestOpenAddress;
+            return (
+              <tr key={row.address} className={best ? "desk-table__row--best" : ""}>
+                <td>
+                  <span className="desk-table__name">{row.displayName}</span>
+                  {best && <span className="desk-table__tag desk-table__tag--best">Best bid</span>}
+                  {mine && <span className="desk-table__tag desk-table__tag--mine">Your desk</span>}
+                </td>
+                <td className="desk-table__bid">
+                  1 GOAT = {testnetAmount(formatBid(row.bid), "USDT")}
+                </td>
+                {showDepth && (
+                  <td className="desk-table__depth">
+                    {testnetAmount(formatUsdt(row.depth), "USDT")}
+                  </td>
+                )}
+                <td>
+                  <span
+                    className={`desk-table__badge ${
+                      row.isOpen ? "desk-table__badge--open" : "desk-table__badge--closed"
+                    }`}
+                  >
+                    {row.isOpen ? "Open" : "Closed"}
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }

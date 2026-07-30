@@ -4,6 +4,11 @@
 // unlock when the user opts in or for local pilot convenience.
 
 import { ENROLLMENT_REGISTRY_ABI } from "./abis.js";
+import { getDeployment } from "./addresses.js";
+import { getPublicClient, getWalletClient } from "./client.js";
+import { createRustAccount } from "./rustAccount.js";
+import { commandError } from "./errors.js";
+import { waitForReceipt } from "./receipt.js";
 
 /**
  * @returns {Promise<boolean>} true if already enrolled or enroll succeeded
@@ -58,8 +63,8 @@ export async function ensureEnrolled({ publicClient, walletClient, account, enro
       functionName: "enrollSelf",
       args: [],
     });
-    // Wait for receipt so UI can refresh enrolled=true
-    await publicClient.waitForTransactionReceipt({ hash });
+    // Wait for receipt so UI can refresh enrolled=true (60s timeout — Stream C T1).
+    await waitForReceipt(publicClient, { hash });
     return { already: false, hash };
   } catch (err) {
     const msg = err?.shortMessage || err?.message || String(err);
@@ -72,5 +77,34 @@ export async function ensureEnrolled({ publicClient, walletClient, account, enro
       };
     }
     throw err;
+  }
+}
+
+/** After unlock/import: enrollSelf if needed (pays native ETH gas — anvil accounts have ETH). */
+export async function tryAutoEnroll(networkId, address) {
+  if (!address) return { skipped: true };
+  const deployment = getDeployment(networkId);
+  if (!deployment?.enrollmentRegistry) return { skipped: true, reason: "no registry" };
+  let publicClient;
+  try {
+    publicClient = getPublicClient(networkId);
+  } catch {
+    return { skipped: true, reason: "no rpc" };
+  }
+  const account = createRustAccount(address);
+  const walletClient = getWalletClient(networkId, account);
+  if (!walletClient) return { skipped: true, reason: "no wallet client" };
+  try {
+    const out = await ensureEnrolled({
+      publicClient,
+      walletClient,
+      account,
+      enrollmentRegistry: deployment.enrollmentRegistry,
+    });
+    // ensureEnrolled may soft-skip (0 ETH) with { skipped, error } — do not throw
+    if (out?.skipped && out?.error) return { error: out.error, skipped: true };
+    return out;
+  } catch (err) {
+    return { error: commandError(err) };
   }
 }

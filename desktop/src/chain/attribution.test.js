@@ -199,12 +199,21 @@ describe("deadlineFromNow", () => {
   });
 });
 
+function jsonRes(ok, status, body) {
+  const text = JSON.stringify(body);
+  return {
+    ok,
+    status,
+    text: async () => text,
+    json: async () => body,
+  };
+}
+
 describe("postRelay wrappers", () => {
   it("POSTs bind body to /v1/relay/bind", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true, tx_hash: "0xabc" }),
-    });
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonRes(true, 200, { ok: true, tx_hash: "0xabc" }),
+    );
     const out = await postBindRelay(
       {
         wallet: "0x1111111111111111111111111111111111111111",
@@ -222,10 +231,9 @@ describe("postRelay wrappers", () => {
   });
 
   it("POSTs enroll body to /v1/relay/enroll", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true, tx_hash: "0xdef" }),
-    });
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonRes(true, 200, { ok: true, tx_hash: "0xdef" }),
+    );
     const out = await postEnrollRelay(
       {
         wallet: "0x1111111111111111111111111111111111111111",
@@ -239,11 +247,9 @@ describe("postRelay wrappers", () => {
   });
 
   it("surfaces HTTP errors from relayer", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 400,
-      json: async () => ({ ok: false, error: "username must start with \"GOAT-\"" }),
-    });
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonRes(false, 400, { ok: false, error: 'username must start with "GOAT-"' }),
+    );
     const out = await postBindRelay(
       { wallet: "0x1", username: "bad", deadline: 1, signature: "0x" },
       { fetchImpl },
@@ -262,16 +268,43 @@ describe("postRelay wrappers", () => {
     expect(out.error).toContain("ECONNREFUSED");
   });
 
-  it("maps Failed to fetch to relayer-unreachable guidance", async () => {
+  it("maps Failed to fetch to lab relayer guidance on localhost", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("Failed to fetch"));
     const out = await postBindRelay(
       { wallet: "0x1", username: "GOAT-a", deadline: 1, signature: "0x" },
-      { fetchImpl },
+      { fetchImpl, relayerUrl: "http://127.0.0.1:8787" },
     );
     expect(out.ok).toBe(false);
     expect(out.relayerDown).toBe(true);
     expect(out.error).toMatch(/Relayer unreachable/i);
     expect(out.error).toMatch(/serve-relayer|8787|wallet-gas/i);
+  });
+
+  it("maps Failed to fetch on remote URL without anvil ports", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("Failed to fetch"));
+    const out = await postBindRelay(
+      { wallet: "0x1", username: "GOAT-a", deadline: 1, signature: "0x" },
+      { fetchImpl, relayerUrl: "https://relayer.example.com" },
+    );
+    expect(out.ok).toBe(false);
+    expect(out.relayerDown).toBe(true);
+    expect(out.error).toMatch(/Relayer unreachable/i);
+    expect(out.error).not.toMatch(/8787|anvil|cargo run/i);
+  });
+
+  it("maps CF Access HTML body to access-gate error (hazard #2)", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 403,
+      text: async () => "<!DOCTYPE html><html>cloudflare access</html>",
+    }));
+    const out = await postBindRelay(
+      { wallet: "0x1", username: "GOAT-a", deadline: 1, signature: "0xab" },
+      { fetchImpl, relayerUrl: "https://relayer.example.com" },
+    );
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/access gate/i);
+    expect(out.accessGate).toBe(true);
   });
 });
 

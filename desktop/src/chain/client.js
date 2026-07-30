@@ -3,7 +3,8 @@
 // There is NO plaintext-key path here anymore. Private keys live only in the
 // Rust Stronghold vault; JS builds a Rust-backed viem account via
 // chain/rustAccount.js and drives the active wallet through chain/wallet.js
-// (see docs/superpowers/specs/2026-07-13-stronghold-wallet-design.md §3.2).
+// (see the "Password-Protected Multi-Wallet with Rust-Side Signing — Design"
+// spec, §3.2).
 // The old wallet.dat raw-key store (saveKey/loadKey/clearKey) was removed.
 //
 // RED WARNING (surfaced verbatim by the Wallet key-import UI):

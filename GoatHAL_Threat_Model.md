@@ -1,4 +1,4 @@
-# GoatHAL Execution Isolation — Threat Model (execution-isolation / Vector 1.1)
+# GoatHAL Execution Isolation — Threat Model (Council-6 / Vector 1.1)
 
 **Status:** design + Phase-0 containment proof (AR96)  
 **Scope:** host-edge worker isolation only — not marketplace, not CET, not multi-OS production parity.

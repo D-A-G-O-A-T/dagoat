@@ -385,7 +385,7 @@ fn dev_accept_all_refusal(listen: &str, is_production: bool, is_mainnet: bool) -
 }
 
 /// Whether `GOATD_ALLOW_TESTNET_SEEDS=1` (case-insensitive) is set — the only non-loopback escape
-/// for deterministic, publicly-derivable signing seeds (identity-hardening / H1).
+/// for deterministic, publicly-derivable signing seeds (Council-1 / H1).
 fn allow_testnet_seeds_env() -> bool {
     std::env::var("GOATD_ALLOW_TESTNET_SEEDS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
@@ -394,7 +394,7 @@ fn allow_testnet_seeds_env() -> bool {
 
 /// Return `Some(reason)` if a **deterministic** `testnet_signing_seed` must be refused.
 /// Always refused under production or mainnet (no override). Off loopback, refused unless
-/// `GOATD_ALLOW_TESTNET_SEEDS=1` (identity-hardening / H1 — forgeable identities).
+/// `GOATD_ALLOW_TESTNET_SEEDS=1` (Council-1 / H1 — forgeable identities).
 fn testnet_seed_refusal(
     listen: &str,
     is_production: bool,
@@ -975,7 +975,7 @@ struct ConsensusActor<G: GossipCodec> {
     pending_initiation: Option<HandshakeInitiation>,
     /// Ephemeral ML-KEM decapsulation key matching `pending_initiation.ephemeral_kem_pk`.
     pending_kem: Option<EphemeralKem>,
-    /// MTU-chunking: MTU-safe reassembly of chunked UDP frames (bounded, pre-PQ).
+    /// Council-4: MTU-safe reassembly of chunked UDP frames (bounded, pre-PQ).
     reassembly: ReassemblyTable,
     /// Monotonic msg_id for outbound chunking.
     next_msg_id: u32,
@@ -1080,7 +1080,7 @@ impl<G: GossipCodec> ConsensusActor<G> {
     /// ever runs on the consensus path. The batch lets one packet be a direct reply while others fan a
     /// novel gossip frame out to the mesh.
     fn process(&mut self, raw: &[u8], addr: SocketAddr) -> Vec<(SocketAddr, Vec<u8>)> {
-        // MTU-chunking: reassemble MTU-safe chunks into a logical datagram before any demux/PQ.
+        // Council-4: reassemble MTU-safe chunks into a logical datagram before any demux/PQ.
         let owned: Vec<u8>;
         let logical: &[u8] = if is_chunk(raw) {
             match self.reassembly.ingest_chunk(addr, raw, Instant::now()) {
@@ -1441,7 +1441,7 @@ async fn main() -> std::io::Result<()> {
         Err(e) => fatal(format!("node secret: {e}")),
     };
 
-    // ---- ML-DSA signing key (Track C + identity-hardening) — BEFORE bind (fail-closed, no open port) ----
+    // ---- ML-DSA signing key (Track C + Council-1) — BEFORE bind (fail-closed, no open port) ----
     // Priority: GOATD_SIGNING_SEED (64 hex secret) → gated deterministic testnet seed from
     // node_index / dev → fatal. Deterministic seeds are refuse-by-default off loopback.
     let signer = resolve_signer(
@@ -1459,7 +1459,7 @@ async fn main() -> std::io::Result<()> {
         "goatd: listening on {listen} (MTU-safe framing: max UDP datagram {MAX_UDP_DATAGRAM} B, DF preferred)"
     );
 
-    // execution-isolation: execution isolation availability (fail-closed for payloads; mesh still runs).
+    // Council-6: execution isolation availability (fail-closed for payloads; mesh still runs).
     let iso_status = isolation::check_isolation();
     let iso_policy = isolation::ExecPolicy::default();
     match isolation::may_execute(&iso_status, &iso_policy) {
@@ -1564,7 +1564,7 @@ async fn main() -> std::io::Result<()> {
 
 /// Load or derive the ML-DSA-65 signer; refuse if the derived public key ≠ genesis identity.
 ///
-/// Seed precedence (identity-hardening):
+/// Seed precedence (Council-1):
 /// 1. `GOATD_SIGNING_SEED` (64 hex) — secret, non-derivable; preferred for Alpha / off-host.
 /// 2. Deterministic `testnet_signing_seed(node_index)` — **forgeable**; gated by
 ///    [`testnet_seed_refusal`] (loopback free; non-loopback needs `GOATD_ALLOW_TESTNET_SEEDS=1`;
@@ -1640,7 +1640,7 @@ fn resolve_signer(
 /// the `INITIATION`, retrying a bounded number of times. Runs as its own task.
 fn spawn_bootstrap(socket: Arc<UdpSocket>, peer: String, packet: Vec<u8>) {
     tokio::spawn(async move {
-        // MTU-chunking: fragment the ~3 KB initiation into MTU-safe chunks (DF path).
+        // Council-4: fragment the ~3 KB initiation into MTU-safe chunks (DF path).
         let frags = fragment_datagram(&packet, 0xB007_u32); // bootstrap msg id (ephemeral)
         for attempt in 1..=BOOTSTRAP_ATTEMPTS {
             match tokio::net::lookup_host(&peer).await {
@@ -1674,7 +1674,7 @@ fn spawn_bootstrap(socket: Arc<UdpSocket>, peer: String, packet: Vec<u8>) {
 }
 
 /// Prefer not to rely on IP fragmentation. Outbound logical datagrams are **application-chunked**
-/// to ≤ [`MAX_UDP_DATAGRAM`] (MTU-chunking), so a 1500-byte path does not need OS-level fragments.
+/// to ≤ [`MAX_UDP_DATAGRAM`] (Council-4), so a 1500-byte path does not need OS-level fragments.
 /// Explicit DF via `setsockopt` is intentionally not wired here (avoids libc/windows-sys deps);
 /// the hard guarantee is the chunker + drop-if-oversize in the egress path.
 fn set_dont_fragment(_socket: &UdpSocket) {
@@ -1747,7 +1747,7 @@ async fn consensus_loop(
                 // frame travels many redundant relay paths and nodes re-announce, so a lost copy is
                 // self-healing — whereas stalling to guarantee delivery would shed *inbound consensus*
                 // traffic instead, the head-of-line hazard this decoupling removes.
-                // MTU-chunking: expand large logical egress into MTU-safe chunks before send.
+                // Council-4: expand large logical egress into MTU-safe chunks before send.
                 let batch = actor.process(&raw, addr);
                 let batch = expand_egress_batch(batch, &mut actor.next_msg_id);
                 for (dest, bytes) in batch {
@@ -2140,7 +2140,7 @@ mod tests {
         // Loopback + lab: allowed without opt-in.
         assert!(testnet_seed_refusal("127.0.0.1:4646", false, false, false).is_none());
         assert!(testnet_seed_refusal("[::1]:4646", false, false, false).is_none());
-        // Non-loopback without opt-in: refused (identity-hardening live-smoke target).
+        // Non-loopback without opt-in: refused (Council-1 live-smoke target).
         assert!(testnet_seed_refusal("0.0.0.0:4646", false, false, false).is_some());
         assert!(testnet_seed_refusal("192.168.1.10:4646", false, false, false).is_some());
         // Non-loopback with GOATD_ALLOW_TESTNET_SEEDS opt-in: allowed (lab only).
@@ -2380,7 +2380,7 @@ mod tests {
         assert_eq!(responder.node.seen_messages(), seenr + 1);
     }
 
-    /// MTU-chunking: handshake over **chunked** ingress (simulates ≤1200 B UDP path / 1500 MTU).
+    /// Council-4: handshake over **chunked** ingress (simulates ≤1200 B UDP path / 1500 MTU).
     #[test]
     fn handshake_survives_mtu_safe_chunking() {
         let (mut initiator, mut responder) = actor_pair();

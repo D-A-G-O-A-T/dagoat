@@ -16,9 +16,11 @@ body {
   max-width: 1280px;
   margin: 0 auto;
   padding: 24px 28px 40px;
-  color: #e9e9ee;
-  background: #16161a;
+  color: var(--ink-cream);
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .header {
@@ -27,6 +29,12 @@ body {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 4px 16px;
+  background: var(--glass-bg);
+  border: 0.5px solid var(--glass-border);
+  border-radius: var(--glass-radius);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
 }
 
 .brand {
@@ -93,10 +101,38 @@ h1 {
   line-height: 1.5;
 }
 
-.contribute-lede {
-  margin: -4px 0 0;
+/* .muted.contribute-lede: double class beats the later equal-specificity .muted
+   (12px) so the mockup's 12.5px actually applies. */
+.muted.contribute-lede {
+  font-size: 12.5px;
+  margin: 0 0 14px;
   max-width: 70ch;
   line-height: 1.5;
+}
+
+/* ---- Mockup parity (Task 24): hero heading inside the selected-backend card ---- */
+.hero-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* .miner-tab prefix: outranks the later equal-specificity .tab-panel h2 (18px /
+   12px margin) that would otherwise win — the hero h2 is a .tab-panel descendant. */
+.miner-tab .hero-head h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink-cream);
+}
+
+.hero-head__chip {
+  font-size: 11px;
+  color: var(--ink-muted);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 2px 8px;
 }
 
 .contribute-primary {
@@ -107,27 +143,19 @@ h1 {
   margin: 12px 0;
 }
 
+/* Visuals (background/border/radius/color/weight/hover) come from theme.css
+   .primary-cta — only layout/sizing lives here. */
 .primary-cta {
   appearance: none;
-  border: 1px solid #3ecf8e;
-  background: #3ecf8e;
-  color: #16161a;
-  padding: 10px 18px;
+  padding: 11px 22px;
   font-size: 14px;
-  font-weight: 700;
-  border-radius: 10px;
   cursor: pointer;
   white-space: nowrap;
-}
-
-.primary-cta:hover {
-  filter: brightness(1.05);
 }
 
 .primary-cta:disabled {
   opacity: 0.55;
   cursor: not-allowed;
-  filter: none;
 }
 
 .contribute-primary button:not(.primary-cta) {
@@ -164,30 +192,74 @@ h1 {
   color: #e5484d !important;
 }
 
+/* Page titles: Contribute / Wallet / Market (and Ops). Explicit so nothing can “lose” them. */
+.tab-panel > h2.page-title,
+.tab-panel > h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink-cream);
+  display: block;
+  line-height: 1.3;
+}
+
+/* Page title sits ABOVE the two-column row so 3D preview tops out with Work backends. */
+.tab-panel.miner-tab .contribute-title {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.miner-tab > .wallet-section.unsaved-units-alert {
+  margin-bottom: 12px;
+}
+
+/* Two columns: left = Work backends + rest, right = 3D preview.
+   Title sits above this row so sticky preview tops out with Work backends. */
 .contribute-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
   gap: 20px;
   align-items: start;
-  margin-top: 12px;
+}
+
+.contribute-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Stick while scrolling the long left column (same behavior as before).
+   overflow: visible so .glass:hover scale(1.025) can expand like other cards
+   (overflow:hidden clipped the hover animation at the column edge). */
+.contribute-side {
+  min-width: 0;
+  align-self: start;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow: visible;
+  /* Room for scale(1.025) so the hover animation does not kiss the viewport edge. */
+  padding: 6px;
+  margin: -6px;
+}
+
+.contribute-side .fah-preview {
+  overflow: hidden;
 }
 
 @media (max-width: 960px) {
   .contribute-layout {
     grid-template-columns: 1fr;
   }
-}
-
-.contribute-main {
-  min-width: 0;
+  .contribute-side {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
 }
 
 .fah-preview {
-  position: sticky;
-  top: 12px;
-  border: 1px solid #2a2a32;
-  border-radius: 12px;
-  background: #1c1c22;
   padding: 12px 14px 16px;
   display: flex;
   flex-direction: column;
@@ -204,7 +276,6 @@ h1 {
   height: 280px;
   border-radius: 10px;
   overflow: hidden;
-  background: #0b1220;
   border: 1px solid #2a2a32;
 }
 
@@ -222,7 +293,7 @@ h1 {
 .fah-preview__project {
   margin-top: 8px;
   max-height: 200px;
-  overflow: auto;
+  overflow: hidden;
   padding-right: 4px;
 }
 
@@ -235,7 +306,7 @@ h1 {
 
 .fah-preview__desc {
   font-size: 12px;
-  color: #b0b0b8;
+  color: var(--ink-muted);
   line-height: 1.4;
 }
 
@@ -252,7 +323,7 @@ h1 {
 .fah-preview__id {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 10px;
-  color: #6a6a74;
+  color: var(--ink-muted);
   word-break: break-all;
   margin: 2px 0 6px;
 }
@@ -301,55 +372,35 @@ h1 {
   font-size: 12px;
 }
 
-/* Honesty banner — persistent, non-dismissible. Do not add a close button. */
+/* Honesty banner — persistent, non-dismissible. Do not add a close button.
+   Restyled (Task 16) as a slim footer line under the tab content. */
 .honesty-banner {
-  margin: 16px 0 22px;
-  padding: 12px 16px;
-  border: 1px solid #4a3a15;
-  border-radius: 10px;
-  background: #221c0f;
-  color: #e8cf8a;
-  font-size: 12.5px;
-  line-height: 1.6;
-}
-
-.tabs {
   display: flex;
-  gap: 6px;
-  border-bottom: 1px solid #2a2a31;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
 }
 
-.tab {
-  appearance: none;
-  border: none;
-  background: none;
-  color: #8b8b93;
-  padding: 10px 18px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: color 0.12s ease, border-color 0.12s ease;
-}
-
-.tab:hover {
-  color: #d6d6dd;
-}
-
-.tab.active {
-  color: #3ecf8e;
-  border-bottom-color: #3ecf8e;
+/* App version tag — always sourced from src/version.js, never hardcoded. */
+.honesty-banner-version {
+  flex: 0 0 auto;
+  color: var(--ink-muted);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .tab-content {
-  padding-top: 22px;
+  padding-top: 0;
 }
 
 .tab-panel {
-  border: 1px solid #2a2a31;
-  border-radius: 14px;
-  background: #1c1c21;
-  padding: 22px 24px;
+  padding: 0;
 }
 
 .tab-panel h2 {
@@ -359,7 +410,7 @@ h1 {
 
 .placeholder-note {
   margin: 0;
-  color: #b9b9c2;
+  color: var(--ink-muted);
   font-size: 13.5px;
   line-height: 1.6;
   max-width: 62ch;
@@ -384,10 +435,10 @@ h1 {
 
 .network-switch__btn {
   appearance: none;
-  border: 1px solid #2a2a31;
-  background: #1c1c21;
-  color: #8b8b93;
-  padding: 6px 12px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--ink-cream);
+  padding: 4px 10px;
   font-size: 12px;
   font-weight: 600;
   border-radius: 999px;
@@ -413,18 +464,60 @@ h1 {
 }
 
 .wallet-section {
-  border-top: 1px solid #2a2a31;
-  padding-top: 18px;
+  border: 0.5px solid var(--glass-border);
+  border-radius: var(--glass-radius);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
+  padding: 18px;
+  transition: transform var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease);
 }
 
-.wallet-section:first-of-type {
-  border-top: none;
-  padding-top: 0;
+.wallet-section:hover {
+  transform: scale(1.025);
+  box-shadow: var(--glass-shadow-hover);
+}
+
+/* ---- Wallet info box (T25 C5, founder override of the Task-24 stat-card row):
+   ONE glass card holding all six label/value pairs in a responsive grid. ---- */
+.stat-box {
+  padding: 18px;
+}
+
+.stat-box__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px 16px;
+}
+
+/* T27 P5+P6: passkey and bound-wallet entries span the full row. */
+.stat-box__item--full {
+  grid-column: 1 / -1;
+}
+
+.stat-box > .muted {
+  margin: 12px 0 0;
+}
+
+.stat-box__label {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+
+.stat-box__value {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  word-break: break-all;
 }
 
 .wallet-section h3 {
   margin: 0 0 10px;
   font-size: 14.5px;
+  font-weight: 500;
   color: #e9e9ee;
 }
 
@@ -458,6 +551,8 @@ h1 {
 .sell-form {
   flex-direction: column;
   align-items: stretch;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .sell-form .wallet-actions-row {
@@ -465,16 +560,60 @@ h1 {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  margin: 0;
 }
 
 .sell-form .wallet-actions-row input {
   flex: 1 1 12rem;
 }
 
-.sell-slider {
+/* Slider row: label + range share a tight block (less air above/below the bar). */
+.sell-form > label.muted {
+  margin: 0 0 2px;
+}
+
+/* Selector specificity (0,2,1) beats `.wallet-form input` (0,1,1) below, which
+   otherwise sizes the range input like a text field: its `flex: 1 1 220px` — a
+   width basis in the row forms — is read as a 220px HEIGHT in this COLUMN form,
+   giving the giant gap above/below the bar. flex:none + explicit height kills it;
+   the resets drop the text-input padding/border/background that also bled in. */
+.sell-form input.sell-slider {
+  flex: none;
   width: 100%;
+  height: 1.1rem;
+  margin: 0 0 2px;
+  padding: 0;
+  background: none;
+  border: none;
   accent-color: #3ecf8e;
   cursor: pointer;
+}
+
+/* Collapse the form flex-gap around the range so it sits closer to label + Amount row. */
+.sell-form > label.muted + .sell-slider {
+  margin-top: -4px;
+}
+
+.sell-form > .sell-slider + .wallet-actions-row {
+  margin-top: -2px;
+}
+
+/* Sell GOAT: keep session stats snug against the amount controls */
+.market-col .balance-grid {
+  margin: 0 0 4px;
+}
+
+.market-col .balance-grid + .placeholder-note,
+.market-col .balance-grid + .error-text,
+.market-col .placeholder-note + .sell-form,
+.market-col .error-text + .sell-form,
+.market-col .balance-grid + .sell-form {
+  margin-top: 6px;
+}
+
+.market-col .placeholder-note {
+  margin-top: 6px;
+  margin-bottom: 0;
 }
 
 .sell-slider:disabled {
@@ -527,6 +666,35 @@ h1 {
 
 .wallet-form button:disabled,
 .wallet-actions-row button:disabled {
+  border-color: #3a3a42;
+  color: #5c5c66;
+  cursor: not-allowed;
+  background: none;
+}
+
+/* T27 P7: shared secondary-button convention (accent outline). `button.btn-outline`
+   keeps (0,1,1) specificity and sits AFTER the .wallet-form/.wallet-actions-row
+   button rules so it wins ties inside those containers. */
+button.btn-outline {
+  appearance: none;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-base) var(--ease), color var(--dur-base) var(--ease),
+    border-color var(--dur-base) var(--ease);
+}
+
+button.btn-outline:hover:not(:disabled) {
+  background: rgba(62, 207, 142, 0.12);
+}
+
+button.btn-outline:disabled {
   border-color: #3a3a42;
   color: #5c5c66;
   cursor: not-allowed;
@@ -614,7 +782,7 @@ h1 {
 }
 
 .muted {
-  color: #7c7c85;
+  color: var(--ink-muted);
   font-size: 12px;
 }
 
@@ -744,9 +912,11 @@ h1 {
 
 .progress-bar__fill {
   height: 100%;
+  width: 100%;
   border-radius: 999px;
   background: #3ecf8e;
-  transition: width 0.2s ease;
+  transform-origin: left;
+  transition: transform 0.2s ease;
 }
 
 .miner-power {
@@ -842,57 +1012,137 @@ h1 {
   font-size: 12px;
 }
 
-/* Market tab — multi-desk list (desktop/src/components/DeskTable.jsx). */
+/* Market tab — Sell GOAT | Be a donor side-by-side */
+.market-two-col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.market-col {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .market-two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Market tab — multi-desk list (glass-themed, matches cozy-dark skin). */
+.desk-table-wrap {
+  margin-top: 4px;
+}
+
 .desk-table__caption {
-  caption-side: top;
+  margin: 0 0 12px;
+  line-height: 1.45;
+}
+
+.desk-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  color: var(--ink-cream);
+  border: 0.5px solid var(--glass-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.desk-table th {
   text-align: left;
-  padding: 0 0 8px;
+  color: var(--ink-muted);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  border-bottom: 0.5px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.desk-table td {
+  padding: 12px 14px;
+  border-bottom: 0.5px solid var(--glass-border);
+  vertical-align: middle;
+  color: var(--ink-cream);
+}
+
+.desk-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.desk-table tbody tr {
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.desk-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .desk-table__row--best {
-  background: rgba(62, 207, 142, 0.06);
+  background: rgba(62, 207, 142, 0.08);
+}
+
+.desk-table__row--best:hover {
+  background: rgba(62, 207, 142, 0.12);
+}
+
+.desk-table__name {
+  font-weight: 500;
+  color: var(--ink-cream);
+}
+
+.desk-table__bid,
+.desk-table__depth {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--accent);
 }
 
 .desk-table__tag {
   display: inline-block;
-  margin-left: 7px;
-  padding: 1px 7px;
+  margin-left: 8px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.3px;
   text-transform: uppercase;
   vertical-align: middle;
 }
 
 .desk-table__tag--best {
-  color: #16161a;
-  background: #3ecf8e;
+  color: var(--accent-ink);
+  background: var(--accent);
 }
 
 .desk-table__tag--mine {
-  color: #8b8b93;
-  border: 1px solid #2a2a31;
+  color: var(--ink-muted);
+  border: 0.5px solid var(--glass-border);
   background: transparent;
 }
 
 .desk-table__badge {
   display: inline-block;
-  padding: 2px 9px;
+  padding: 3px 10px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
 }
 
 .desk-table__badge--open {
-  color: #16161a;
-  background: #3ecf8e;
+  color: var(--accent-ink);
+  background: var(--accent);
 }
 
 .desk-table__badge--closed {
-  color: #8b8b93;
-  background: #1c1c21;
-  border: 1px solid #2a2a31;
+  color: var(--ink-muted);
+  background: rgba(0, 0, 0, 0.28);
+  border: 0.5px solid var(--glass-border);
 }
 
 /* Ops tab — desk controls, enrollment, accept-and-mint, dashboard */
@@ -927,37 +1177,57 @@ h1 {
 .firstrun-overlay {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  /* T29 F1: above app chrome/honesty banner. Shared with the first-run modal,
+     which also wants to be on top — safe. (AddWalletOverlay also portals to
+     document.body to escape backdrop-filter stacking-context traps.) */
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.6);
 }
 
-.firstrun-card {
-  background: #1c1c22;
-  border: 1px solid #2a2a31;
-  padding: 24px;
-  border-radius: 12px;
-  max-width: 380px;
-  width: 90%;
+/* T28 R4: the overlay card IS a wizard step card (`wizard__step glass glass--static`
+   in the JSX) — no bespoke card skin here. This class only sizes/positions it
+   inside the dimmed backdrop.
+   Choose view has three horizontal actions (Create / Import / Cancel); 380px
+   overflowed Cancel past the card edge — widen and allow wrap as a safety net. */
+.add-wallet-card {
+  width: min(520px, 94vw);
+  box-sizing: border-box;
+}
+
+/* Unlock-wallet modal: "Wallet :" + select on one row. */
+.unlock-wallet-row {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 6px;
+}
+
+.unlock-wallet-row .unlock-wallet-label {
+  flex: 0 0 auto;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.unlock-wallet-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.add-wallet-card .wizard-actions {
+  flex-wrap: wrap;
   gap: 10px;
 }
 
-.firstrun-card h2 {
-  margin: 0;
-  font-size: 17px;
-}
-
-.firstrun-card input {
-  background: #16161a;
-  border: 1px solid #2a2a31;
-  border-radius: 8px;
-  padding: 8px 10px;
-  color: #e9e9ee;
-  font-size: 13px;
+/* The overlay renders inside a tab panel, so `.tab-panel h2` (18px / 0 0 12px)
+   would leak in — restore the wizard step card's UA-default heading metrics so
+   the title typography matches the wizard byte-for-byte. */
+.add-wallet-card h2 {
+  font-size: 1.5em;
+  margin: 0.83em 0;
 }
 
 .firstrun-input-row {
@@ -1037,3 +1307,62 @@ h1 {
 .link-button:hover {
   color: #d6d6dd;
 }
+
+/* ---- onboarding wizard ---- */
+.wizard { max-width: 720px; margin: 6vh auto; padding: 0 16px; display: flex; flex-direction: column; gap: 16px; }
+/* T27 P1: back-arrow chip, top-left inside the step card (glass class supplies skin). */
+.wizard-back { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 0; margin: 0 0 12px; border-radius: 10px; color: var(--ink-cream); font-size: 15px; line-height: 1; cursor: pointer; }
+.wizard__banner { padding: 0; overflow: hidden; }
+.wizard__banner img { display: block; width: 100%; height: auto; }
+.wizard__step { padding: 24px; }
+.wizard-scrollbox { max-height: 260px; overflow-y: auto; border: 1px solid var(--glass-border); border-radius: 10px; padding: 12px 16px; margin: 12px 0; }
+.wizard-actions { display: flex; gap: 14px; align-items: center; margin-top: 8px; }
+.wizard-actions .primary-cta { padding: 11px 22px; font-size: 15px; }
+.wizard-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+.wizard-card { text-align: left; padding: 18px; color: var(--ink-cream); cursor: pointer; }
+.wizard-optout { font-size: 13px; color: var(--ink-muted); }
+.wizard__dots { display: flex; gap: 8px; justify-content: center; }
+.wizard__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--glass-border); transition: background var(--dur-fast) var(--ease); }
+.wizard__dot.active { background: var(--accent); }
+@media (max-width: 700px) { .wizard-cards { grid-template-columns: 1fr; } }
+.wizard-step input[type="text"], .wizard-step input[type="password"] { width: 100%; margin: 6px 0; }
+.key-chip { display: flex; align-items: center; gap: 10px; border: 1px solid var(--glass-border); border-radius: 10px; padding: 10px 14px; margin: 12px 0; }
+.key-chip code { font-family: monospace; font-size: 13px; word-break: break-all; color: var(--accent); }
+.wizard-confirm { display: flex; gap: 8px; align-items: center; margin: 10px 0; color: var(--ink-cream); }
+
+/* ---- app shell (Task 16) ---- */
+.header { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; }
+.header__right { display: flex; align-items: center; gap: 16px; }
+.brand-lockup { display: flex; align-items: center; gap: 10px; background: none; border: none; cursor: pointer; padding: 4px; }
+.brand-lockup__mark { height: 34px; width: auto; }
+.brand-lockup__words { display: flex; flex-direction: column; text-align: left; }
+.brand-lockup__name { color: var(--ink-cream); letter-spacing: 0.35em; font-size: 14px; font-weight: 500; }
+.brand-lockup__sub { color: var(--ink-muted); letter-spacing: 0.22em; font-size: 8.5px; }
+.earn-switch__row { display: flex; align-items: center; gap: 8px; }
+.earn-switch__label { color: var(--ink-muted); font-size: 12px; }
+.earn-switch__track { width: 40px; height: 24px; border-radius: 12px; border: none; background: var(--switch-off); position: relative; padding: 0; cursor: pointer; transition: background var(--dur-base) var(--ease); }
+.earn-switch__track.on { background: var(--accent); }
+.earn-switch__thumb { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left var(--dur-base) var(--ease); }
+.earn-switch__track.on .earn-switch__thumb { left: 19px; }
+.earn-switch__caption { margin: 2px 0 0; font-size: 10.5px; color: var(--ink-muted); max-width: 260px; }
+.tabs { display: flex; gap: 4px; padding: 6px; margin: 0; }
+.tab { position: relative; background: none; border: none; color: var(--ink-muted); padding: 8px 18px; cursor: pointer; border-radius: 10px; transition: transform var(--dur-base) var(--ease); }
+.tab:hover { transform: scale(1.05); }
+.tab.active { color: var(--accent-ink); }
+.tab__highlight { position: absolute; inset: 0; background: var(--accent); border-radius: 10px; }
+.tab__label { position: relative; z-index: 1; font-weight: 500; }
+
+/* ---- Contribute tab restructure (Task 17): science tag + per-row dump ---- */
+.unit-row__cause { font-size: 11px; color: var(--accent); border: 1px solid var(--glass-border); border-radius: 8px; padding: 2px 8px; margin-left: 8px; }
+.unit-row__dump { font-size: 11px; padding: 3px 10px; }
+.earning-off { padding: 16px 18px; }
+
+/* ---- Attribution panel rework (Task 18): three-zone layout ---- */
+.tech-details summary { color: var(--ink-muted); cursor: pointer; font-size: 12.5px; margin-top: 10px; }
+.attr-copy-addr { cursor: pointer; background: none; border: none; padding: 0; font: inherit; color: inherit; }
+.attr-copy-addr:hover { text-decoration: underline; }
+
+/* ---- Wallet tab: masked private-key reveal row (Task 20, D1) ---- */
+.reveal-key-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.reveal-key-row__value { background: none; border: 1px dashed var(--glass-border); border-radius: 8px; padding: 5px 12px; cursor: pointer; color: var(--ink-cream); }
+.reveal-key-row__value code { color: var(--accent); font-size: 12px; word-break: break-all; }

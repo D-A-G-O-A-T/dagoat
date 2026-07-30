@@ -1,6 +1,6 @@
-# MIGRATION.md — Transferring the D.A. G.O.A.T. Engine Containerized Build to a New Host
+# MIGRATION.md — Transferring the GoatCoin Containerized Build to a New Host
 
-This guide moves the fully-built D.A. G.O.A.T. Engine testnet (the `goatd` daemon + the 5-node cluster) from one
+This guide moves the fully-built GoatCoin testnet (the `goatd` daemon + the 5-node cluster) from one
 machine to another — e.g., a local laptop → a cloud VPS — **without requiring a Rust toolchain on the
 destination**. Read [`DEPLOY.md`](DEPLOY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md) §6 for the
 runtime model.
@@ -9,7 +9,7 @@ runtime model.
 
 ## 1. What "the build" actually is (the transfer set)
 
-The D.A. G.O.A.T. Engine build is fully described by a small set of files — **not** by any compiled artifact,
+The GoatCoin build is fully described by a small set of files — **not** by any compiled artifact,
 which is always regenerated:
 
 | Transfer | Path(s) | Why |
@@ -119,7 +119,7 @@ then `docker compose up`." The local compose ships distinct dev/test `GOATD_NODE
 node; a real deployment supplies real per-node secrets (below). **Do not** carry Docker volume state
 between hosts.
 
-**Signing identity (ML-DSA-65) — identity-hardening (required for Alpha / off-host):**
+**Signing identity (ML-DSA-65) — Council-1 (required for Alpha / off-host):**
 
 - **Precedence:** `GOATD_SIGNING_SEED` (64 hex secret) **first**. Only if unset may the daemon use a
   deterministic `testnet_signing_seed(node-index)` — and only on **loopback**, or with explicit
@@ -159,7 +159,7 @@ between hosts.
 - [ ] A UDP `INITIATION` to each mapped host port (`localhost:4640 … 4644`) returns a cookie
       challenge (`tag = 0x81`, `len = 41`).
 - [ ] `docker compose logs` show **PQ host crypto ACTIVE** (Track C). Lab deterministic seeds should
-      also show the **FORGEABLE NODE IDENTITY** banner (identity-hardening). Production must use
+      also show the **FORGEABLE NODE IDENTITY** banner (Council-1). Production must use
       `GOATD_SIGNING_SEED` and must **not** set `GOATD_ALLOW_TESTNET_SEEDS`.
 - [ ] Production migrations must have
       completed the Backend Swap Checklist *before* transfer.
@@ -167,7 +167,7 @@ between hosts.
 
 ---
 
-*A D.A. G.O.A.T. Engine migration is intentionally boring: the daemon is a single self-contained binary with no
+*A GoatCoin migration is intentionally boring: the daemon is a single self-contained binary with no
 hidden local state, so the whole network is reproducible from `Cargo.lock` + the container recipes +
 `genesis.json`. The only thing that ever needs careful, secure handling is per-node key material —
 and at V1.0 there is none.*

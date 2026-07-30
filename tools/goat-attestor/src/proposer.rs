@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::chain::{ChainClient, ChainError};
 use crate::evidence::{evidence_ref_keccak, write_evidence_json};
 use crate::fah::{FahClient, FahError, HttpGet};
-use crate::merkle::{Leaf, MerkleTree, parse_address};
+use crate::merkle::{parse_address, Leaf, MerkleTree};
 use crate::registry::{WorkerEntry, WorkerRegistry};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +92,34 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Chain time when known (> 0), wall-clock fallback otherwise. Shared by
+/// `current_daily_epoch_id` and the day-rollover warp math (T31 Fix 2) so
+/// both derive "now" the same way `propose_full`'s own epoch default does.
+pub fn chain_or_wall_now<C: ChainClient + ?Sized>(chain: &C) -> u64 {
+    let ts = chain.block_timestamp().unwrap_or(0);
+    if ts > 0 {
+        ts
+    } else {
+        now_unix()
+    }
+}
+
+/// Today's daily epoch id (`YYYYMMDD`) derived from chain time — the same
+/// derivation `propose_full` uses when `epoch_id` is `None`. Exposed so
+/// callers can check `batches(epoch)` status BEFORE calling `propose_full`
+/// (T31 Fix 2: never blind-fire `proposeBatch` on an already-consumed epoch).
+pub fn current_daily_epoch_id<C: ChainClient + ?Sized>(chain: &C) -> u64 {
+    daily_epoch_id(chain_or_wall_now(chain))
+}
+
+/// Seconds to warp so the chain lands just past the NEXT UTC midnight after
+/// `now` (a small +2s margin past the exact boundary — mirrors the margin
+/// style `settlement.rs` uses when warping past `challengeDeadline`).
+pub fn seconds_past_next_midnight(now: u64) -> u64 {
+    let next_midnight = (now / 86_400 + 1) * 86_400;
+    next_midnight.saturating_sub(now) + 2
+}
+
 /// Build an epoch batch from worker list + already-fetched scores.
 pub fn build_epoch_batch(
     epoch_id: u64,
@@ -136,13 +164,13 @@ pub fn build_epoch_batch(
         leaves: &records,
         merkle_root: format!("0x{}", hex::encode(root)),
     };
-    let json = serde_json::to_vec_pretty(&doc).map_err(|e| ProposerError::Evidence(e.to_string()))?;
+    let json =
+        serde_json::to_vec_pretty(&doc).map_err(|e| ProposerError::Evidence(e.to_string()))?;
     let evidence_ref = evidence_ref_keccak(&json);
 
     let evidence_path = if let Some(dir) = evidence_dir {
         let name = format!("epoch_{epoch_id}.json");
-        let path = write_evidence_json(dir, &name, &doc)
-            .map_err(ProposerError::Evidence)?;
+        let path = write_evidence_json(dir, &name, &doc).map_err(ProposerError::Evidence)?;
         Some(path.display().to_string())
     } else {
         None
@@ -177,14 +205,16 @@ impl<'a, C: ChainClient + ?Sized, H: HttpGet> Proposer<'a, C, H> {
         registry: &WorkerRegistry,
         epoch_id: Option<u64>,
     ) -> Result<EpochBatch, ProposerError> {
-        let epoch = epoch_id.unwrap_or_else(|| {
-            // 0 = unknown (ChainClient::block_timestamp default / Err) → wall-clock fallback.
-            let ts = self.chain.block_timestamp().unwrap_or(0);
-            daily_epoch_id(if ts > 0 { ts } else { now_unix() })
-        });
+        // 0 = unknown (ChainClient::block_timestamp default / Err) → wall-clock fallback.
+        let epoch = epoch_id.unwrap_or_else(|| current_daily_epoch_id(self.chain));
+        // Atomic derivation (T31 Fix 1): epoch_id above and the scores below
+        // must come from the SAME snapshot in time. `fetch_user_uncached`
+        // bypasses the FahClient's wall-clock cache so a chain-time day
+        // rollover (via auto_warp) can never silently commit a stale score
+        // under a fresh epoch id.
         let mut scored = Vec::new();
         for w in registry.all_bound() {
-            let stats = self.fah.fetch_user(&w.username)?;
+            let stats = self.fah.fetch_user_uncached(&w.username)?;
             scored.push((w.clone(), stats.score as u128));
         }
         let batch = build_epoch_batch(epoch, &scored, Some(&self.evidence_dir))?;
@@ -213,9 +243,10 @@ impl<'a, C: ChainClient + ?Sized, H: HttpGet> Proposer<'a, C, H> {
             return Ok(vec![]);
         }
 
+        // Same atomic-derivation guarantee as `propose_full` (T31 Fix 1).
         let mut scored = Vec::new();
         for w in &need {
-            let stats = self.fah.fetch_user(&w.username)?;
+            let stats = self.fah.fetch_user_uncached(&w.username)?;
             scored.push((w.clone(), stats.score as u128));
         }
 
@@ -264,7 +295,9 @@ impl<'a, C: ChainClient + ?Sized, H: HttpGet> Proposer<'a, C, H> {
 mod tests {
     use super::*;
     use crate::chain::MockChain;
-    use crate::fah::{FixtureHttp, default_fixtures_dir};
+    use crate::fah::{default_fixtures_dir, FahError, FixtureHttp, HttpGet};
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -328,7 +361,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let chain = MockChain::new();
         let http = FixtureHttp::new(default_fixtures_dir());
-        let fah = FahClient::new(http, "https://api.foldingathome.org", Duration::from_millis(0));
+        let fah = FahClient::new(
+            http,
+            "https://api.foldingathome.org",
+            Duration::from_millis(0),
+        );
         let mut reg = WorkerRegistry::new();
         reg.upsert(WorkerEntry {
             wallet: "0x00000000000000000000000000000000000000A1".into(),
@@ -362,7 +399,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let chain = MockChain::new();
         let http = FixtureHttp::new(default_fixtures_dir());
-        let fah = FahClient::new(http, "https://api.foldingathome.org", Duration::from_millis(0));
+        let fah = FahClient::new(
+            http,
+            "https://api.foldingathome.org",
+            Duration::from_millis(0),
+        );
         let mut reg = WorkerRegistry::new();
         reg.upsert(WorkerEntry {
             wallet: "0x00000000000000000000000000000000000000A1".into(),
@@ -400,7 +441,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let chain = MockChain::new();
         let http = FixtureHttp::new(default_fixtures_dir());
-        let fah = FahClient::new(http, "https://api.foldingathome.org", Duration::from_millis(0));
+        let fah = FahClient::new(
+            http,
+            "https://api.foldingathome.org",
+            Duration::from_millis(0),
+        );
         let mut reg = WorkerRegistry::new();
         reg.upsert(WorkerEntry {
             wallet: "0x00000000000000000000000000000000000000A1".into(),
@@ -429,5 +474,95 @@ mod tests {
         let b = p.propose_full(&reg, None).unwrap();
         let after = daily_epoch_id(now_unix());
         assert!(b.epoch_id == before || b.epoch_id == after);
+    }
+
+    /// HttpGet stub that serves queued fixture bodies in order, one per live
+    /// call — models a real FAH API whose score changes between reads.
+    struct SequencedHttp {
+        bodies: Mutex<VecDeque<String>>,
+    }
+
+    impl HttpGet for SequencedHttp {
+        fn get(&self, _url: &str) -> Result<(u16, String), FahError> {
+            let mut q = self.bodies.lock().unwrap();
+            let body = q
+                .pop_front()
+                .expect("SequencedHttp: no more fixture responses queued");
+            Ok((200, body))
+        }
+    }
+
+    /// T31 Fix 1 repro (RED on unfixed code): the daemon's `FahClient` cache is
+    /// keyed on real wall-clock elapsed time, but the daily epoch id is derived
+    /// from CHAIN time. Under `auto_warp`, chain time can leap across a day
+    /// boundary while real wall-clock time barely advances (as in this test,
+    /// where the two `propose_full` calls execute microseconds apart). Before
+    /// the fix, the second call silently reuses yesterday's cached FAH score
+    /// (`fetch_user`'s min-interval cache is still "fresh" in real time) and
+    /// proposes a root computed from stale data for the NEW epoch id — exactly
+    /// the incident: on-chain root for day N+1 byte-matches day N's snapshot.
+    #[test]
+    fn propose_full_uses_fresh_score_across_day_rollover() {
+        let dir = tempdir().unwrap();
+        let chain = MockChain::new();
+        let body_a = r#"{"name":"GOAT-alice","id":1001,"score":191682,"wus":1,"rank":1,"team":1}"#;
+        let body_b = r#"{"name":"GOAT-alice","id":1001,"score":1930774,"wus":1,"rank":1,"team":1}"#;
+        let http = SequencedHttp {
+            bodies: Mutex::new(VecDeque::from([body_a.to_string(), body_b.to_string()])),
+        };
+        // Realistic non-zero interval (matches config.rs's MIN_FAH_INTERVAL_MS
+        // default of 1000ms). The bug depends on real wall-clock elapsed time
+        // between the two propose calls below staying under this — exactly
+        // what happens in a fast lab loop (or this test).
+        let fah = FahClient::new(
+            http,
+            "https://api.foldingathome.org",
+            Duration::from_millis(1000),
+        );
+        let mut reg = WorkerRegistry::new();
+        reg.upsert(WorkerEntry {
+            wallet: "0x00000000000000000000000000000000000000A1".into(),
+            username: "GOAT-alice".into(),
+            baseline_batched: true,
+            fah_id: None,
+            enrollment_epoch: None,
+        });
+        let p = Proposer {
+            chain: &chain,
+            fah: &fah,
+            bond_wei: 1_000_000_000_000_000_000,
+            evidence_dir: dir.path().to_path_buf(),
+            state_dir: dir.path().join("state"),
+        };
+
+        chain.set_now(1_704_067_200); // day N = 2024-01-01 00:00:00 UTC
+        let batch_n = p.propose_full(&reg, None).unwrap();
+        assert_eq!(batch_n.epoch_id, 20240101);
+        assert_eq!(batch_n.leaves[0].cumulative_score, 191_682);
+
+        // Chain-time day rollover with ~zero real wall-clock elapsed — exactly
+        // what `auto_warp`'s anvil `evm_increaseTime` produces in the lab.
+        chain.increase_time(86_400).unwrap();
+        let batch_n1 = p.propose_full(&reg, None).unwrap();
+        assert_eq!(batch_n1.epoch_id, 20240102);
+        assert_eq!(
+            batch_n1.leaves[0].cumulative_score, 1_930_774,
+            "day N+1 must commit the FRESH score, not a wall-clock-cached stale value"
+        );
+        assert_ne!(
+            batch_n1.merkle_root, batch_n.merkle_root,
+            "N+1's root must differ from N's (must not be byte-identical to yesterday's)"
+        );
+
+        // Evidence parity: the file written for N+1 must carry the SAME root
+        // that gets proposed on-chain for N+1 (Fix 1's atomicity guarantee).
+        let ev_path = dir.path().join(format!("epoch_{}.json", batch_n1.epoch_id));
+        let ev_raw = std::fs::read_to_string(&ev_path).unwrap();
+        let ev: serde_json::Value = serde_json::from_str(&ev_raw).unwrap();
+        assert_eq!(
+            ev["merkle_root"].as_str().unwrap(),
+            batch_n1.merkle_root_hex,
+            "evidence file for N+1 must match its on-chain-proposed root"
+        );
     }
 }

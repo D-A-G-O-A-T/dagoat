@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "node scripts/inject-relayer-csp.mjs && npm run build"
   },
   "app": {
     "withGlobalTauri": false,
@@ -24,12 +24,12 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8545 http://127.0.0.1:8787 http://localhost:8787 https://sepolia.base.org https://api.foldingathome.org; script-src 'self' 'unsafe-eval'; worker-src 'self' blob:"
+      "csp": "default-src 'self' customprotocol: asset: http://asset.localhost https://asset.localhost http://tauri.localhost https://tauri.localhost tauri:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob: asset: http://asset.localhost https://asset.localhost; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost http://tauri.localhost https://tauri.localhost ws://tauri.localhost wss://tauri.localhost tauri: asset: http://asset.localhost https://asset.localhost http://127.0.0.1:8545 http://localhost:8545 http://127.0.0.1:8787 http://localhost:8787 https://sepolia.base.org https://api.foldingathome.org; script-src 'self' 'unsafe-eval'; worker-src 'self' blob:"
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
     "category": "Utility",
     "shortDescription": "GoatCoin desktop node — the D.A. G.O.A.T. alpha.",
     "icon": [
@@ -38,6 +38,11 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }

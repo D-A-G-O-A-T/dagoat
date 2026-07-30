@@ -22,7 +22,7 @@
   },
   "key_registry": {
     "bootstrap_note": "Seeds KeyRegistry::is_authorized((public_key, node_id)); only these (node_id, ML-DSA-65 public key) pairs may originate CapabilityRecords. One orchestrator per local testnet node (node-0..node-4).",
-    "dev_key_note": "TESTNET LAB: full 1952-byte ML-DSA-65 public keys from deterministic testnet_signing_seed(i) (Track C). These secrets are publicly derivable from the repo — forgeable identities (identity-hardening). Off-host/Alpha: regenerate with `goat-keygen --random` and set GOATD_SIGNING_SEED per node; non-loopback lab needs GOATD_ALLOW_TESTNET_SEEDS=1.",
+    "dev_key_note": "TESTNET LAB: full 1952-byte ML-DSA-65 public keys from deterministic testnet_signing_seed(i) (Track C). These secrets are publicly derivable from the repo — forgeable identities (Council-1). Off-host/Alpha: regenerate with `goat-keygen --random` and set GOATD_SIGNING_SEED per node; non-loopback lab needs GOATD_ALLOW_TESTNET_SEEDS=1.",
     "genesis_orchestrators": [
       {
         "node_id": "0000000000000000000000000000000000000000000000000000000000000000",

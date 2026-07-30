@@ -68,4 +68,34 @@ contract EnrollmentRegistryMetaTxTest is Test {
         vm.expectRevert(EnrollmentRegistry.ExpiredSignature.selector);
         reg.enrollSelfWithSignature(alice, deadline, sig);
     }
+
+    function test_enrollSelfWithSignature_alreadyEnrolled_reverts() public {
+        uint256 deadline = block.timestamp + 1 hours;
+
+        // First enroll via meta-tx.
+        {
+            bytes32 structHash =
+                keccak256(abi.encode(reg.ENROLL_TYPEHASH(), alice, reg.nonces(alice), deadline));
+            bytes32 digest =
+                keccak256(abi.encodePacked("\x19\x01", reg.DOMAIN_SEPARATOR(), structHash));
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(alicePk, digest);
+            bytes memory sig = abi.encodePacked(r, s, v);
+            vm.prank(relayer);
+            reg.enrollSelfWithSignature(alice, deadline, sig);
+        }
+        assertTrue(reg.enrolled(alice));
+
+        // Second enroll with next nonce still reverts AlreadyEnrolled (not BadSignature).
+        {
+            bytes32 structHash =
+                keccak256(abi.encode(reg.ENROLL_TYPEHASH(), alice, reg.nonces(alice), deadline));
+            bytes32 digest =
+                keccak256(abi.encodePacked("\x19\x01", reg.DOMAIN_SEPARATOR(), structHash));
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(alicePk, digest);
+            bytes memory sig = abi.encodePacked(r, s, v);
+            vm.prank(relayer);
+            vm.expectRevert(EnrollmentRegistry.AlreadyEnrolled.selector);
+            reg.enrollSelfWithSignature(alice, deadline, sig);
+        }
+    }
 }

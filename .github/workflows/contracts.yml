@@ -1,0 +1,166 @@
+# =============================================================================
+# contracts: the Foundry half of the local gate, mirrored for GitHub Actions.
+#
+# READ THIS BEFORE TRUSTING A GREEN BADGE HERE.
+#
+# This workflow has NEVER RUN. `git remote -v` is empty on the dev machine, so
+# there is nothing to trigger on. It is a specification of what coverage WOULD
+# look like, not evidence that anything passed. What actually runs today is
+# `tools/goat-attestor/run-full-gate.ps1`, executed by a human.
+#
+# It IS reachable once published, unlike a naive reading suggests: this file sits
+# at `flight/GPUCoin_Guidance/.github/workflows/` in the internal tree -- three
+# levels below the `F:/` git toplevel, where Actions would never find it -- but
+# `tools/export-baseline.txt` publishes it as `.github/workflows/contracts.yml`,
+# i.e. at the mirror's ROOT. So the "wrong depth" blocker applies to the internal
+# repo only, and stops applying the moment the export runs.
+#
+# WHY `forge fmt` IS ADVISORY AND NOT GATING (measured 2026-07-29):
+# `forge fmt --check` exits 1 today on **40 of 67** `.sol` files under `src/`,
+# `test/` and `script/`. The tree has never been forge-fmt-clean. Gating it would
+# make the FIRST EVER push red for formatting rather than correctness, and
+# "just fix it first" means a 40-file reformat of contracts whose runtime size was
+# deliberately tuned under EIP-170 -- a large, functionally-empty diff landing
+# immediately before a first public disclosure. This mirrors the decision already
+# recorded in `ci.yml` for `cargo fmt` on the goatcoin-rs tree, for the same
+# reason. To make it gating: run `forge fmt`, re-run the full local gate
+# (`forge test` must still be 248 and `GoatRelayGateway` must still fit), then
+# flip `continue-on-error` off in the same commit.
+#
+# WHY THE COUNTS ARE PINNED:
+# `forge test` passing is not the same as `forge test` running. A suite reduced to
+# three tests exits 0, and so does one whose files never compiled into it. The
+# local gate pins the count for exactly this reason; CI had no such assertion, so
+# a silent collapse of the suite would have shown a green badge. Same for the node
+# parity fixtures. Bump these deliberately, in the commit that adds the tests, and
+# keep them equal to `$ExpectedForgeTests` / `$ExpectedNodeParityTests` in
+# `run-full-gate.ps1` -- if the two disagree, one of them is lying.
+# =============================================================================
+
+name: contracts
+
+on:
+  push:
+    paths: ["contracts/**", ".github/workflows/contracts.yml"]
+  pull_request:
+    paths: ["contracts/**", ".github/workflows/contracts.yml"]
+
+env:
+  # Keep in lockstep with run-full-gate.ps1's $Expected* pins.
+  EXPECTED_FORGE_TESTS: "248"
+  EXPECTED_NODE_PARITY_TESTS: "10"
+  # EIP-170 deployed-code cap. GoatRelayGateway was 33,914 bytes once; the
+  # refactor into libraries brought it to 12,944. Nothing but an assertion keeps
+  # it there.
+  EIP170_LIMIT: "24576"
+
+jobs:
+  forge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned, not floating. Anvil/forge cheatcode surface is not covered by
+      # semver and the harness's documented behaviour was verified against 1.7.1.
+      #
+      # THE ACTION TAG AND THE FOUNDRY VERSION ARE DIFFERENT THINGS. This line
+      # used to read `foundry-rs/foundry-toolchain@v1.7.1`, and that ACTION tag
+      # does not exist (the action's tags jump v1.7.0 -> v1.8.0), so every run of
+      # this workflow would have failed at setup with "Unable to resolve action"
+      # -- on a workflow that has never run, so nothing would have caught it but a
+      # push. Corrected 2026-07-29: `@v1.7.0` is the action, `version: v1.7.1` is
+      # the Foundry release, which is what the sentence above was always asking
+      # for.
+      - uses: foundry-rs/foundry-toolchain@v1.7.0
+        with:
+          version: v1.7.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build
+        run: forge build
+
+      # Advisory ONLY -- see the header. Do not turn this into a gate without
+      # doing the reformat and re-running the local gate first.
+      - name: Format check (advisory, 40 of 67 files are not fmt-clean)
+        run: forge fmt --check
+        continue-on-error: true
+
+      - name: Test (count pinned)
+        run: |
+          set -o pipefail
+          forge test -vv | tee forge-test.log
+          # Summary line reads: "... : 248 tests passed, 0 failed, 0 skipped ..."
+          passed=$(grep -oE '[0-9]+ tests passed' forge-test.log | tail -n 1 | grep -oE '^[0-9]+')
+          failed=$(grep -oE '[0-9]+ failed' forge-test.log | tail -n 1 | grep -oE '^[0-9]+')
+          echo "forge: passed=${passed} failed=${failed} expected=${EXPECTED_FORGE_TESTS}"
+          if [ -z "${passed}" ]; then
+            echo "::error::could not parse the forge test summary line -- a green exit here would prove nothing"
+            exit 1
+          fi
+          if [ "${failed}" != "0" ]; then
+            echo "::error::${failed} contract test(s) failed"
+            exit 1
+          fi
+          if [ "${passed}" != "${EXPECTED_FORGE_TESTS}" ]; then
+            echo "::error::forge test count is ${passed}, expected ${EXPECTED_FORGE_TESTS} -- the suite changed size; bump EXPECTED_FORGE_TESTS deliberately"
+            exit 1
+          fi
+
+      # AFTER `forge test`, deliberately: that step rewrites
+      # `deployments/31337.stream-g.json`, which these fixtures read. Running them
+      # first would check a stale artifact. The local gate orders them the same way
+      # and says so.
+      - name: Node parity fixtures (count pinned)
+        run: |
+          set -o pipefail
+          node --test test/StreamGManifest.test.mjs test/keccak256.test.mjs | tee node-parity.log
+          passed=$(grep -oE '(^|[^0-9])pass [0-9]+' node-parity.log | tail -n 1 | grep -oE '[0-9]+')
+          failed=$(grep -oE '(^|[^0-9])fail [0-9]+' node-parity.log | tail -n 1 | grep -oE '[0-9]+')
+          echo "node parity: pass=${passed} fail=${failed} expected=${EXPECTED_NODE_PARITY_TESTS}"
+          if [ -z "${passed}" ]; then
+            echo "::error::could not parse node --test's summary -- an absent runtime must not read as a pass"
+            exit 1
+          fi
+          if [ "${failed}" != "0" ]; then
+            echo "::error::${failed} parity fixture(s) failed -- the JS canonicaliser, its pinned bytes, or the deployment artifact has drifted from Rust"
+            exit 1
+          fi
+          if [ "${passed}" != "${EXPECTED_NODE_PARITY_TESTS}" ]; then
+            echo "::error::node parity count is ${passed}, expected ${EXPECTED_NODE_PARITY_TESTS}"
+            exit 1
+          fi
+
+      # An INDEPENDENT size assertion, not `forge build --sizes`' own opinion.
+      # This exists because the gateway shipped at 33,914 bytes against a 24,576
+      # limit and nothing noticed: both anvil and the deploy script were run with
+      # `--disable-code-size-limit`, so an undeployable contract deployed happily
+      # in every test.
+      - name: EIP-170 size guard (GoatRelayGateway)
+        run: |
+          artifact=out/GoatRelayGateway.sol/GoatRelayGateway.json
+          if [ ! -f "${artifact}" ]; then
+            echo "::error::${artifact} not found -- cannot size it, and 'could not check' must not read as 'fits'"
+            exit 1
+          fi
+          hex=$(jq -r '.deployedBytecode.object' "${artifact}")
+          case "${hex}" in
+            0x*) ;;
+            *) echo "::error::deployedBytecode.object does not start with 0x -- refusing to guess its length"; exit 1 ;;
+          esac
+          bytes=$(( (${#hex} - 2) / 2 ))
+          echo "GoatRelayGateway deployed size: ${bytes} B (cap ${EIP170_LIMIT})"
+          if [ "${bytes}" -gt "${EIP170_LIMIT}" ]; then
+            echo "::error::GoatRelayGateway is ${bytes} bytes, over the ${EIP170_LIMIT} cap by $(( bytes - EIP170_LIMIT ))"
+            exit 1
+          fi
+          # A stub artifact would otherwise satisfy the cap trivially.
+          if [ "${bytes}" -lt 1000 ]; then
+            echo "::error::${bytes} bytes is implausibly small -- the artifact is probably a stub, and this guard would then pass on anything"
+            exit 1
+          fi

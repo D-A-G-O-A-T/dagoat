@@ -1,7 +1,7 @@
 # RUNTIME_VS_SPEC.md — What is shipped vs what is designed (P6 honesty matrix)
 
-**Date:** 2026-07-08 · **Track:** B (P6) · **Owner:** Project
-**Predecessor:** AR88 (Track A archive) · **Companion:** `ARCHITECTURE_CONVERGENCE.md` (P1), README.md
+**Date:** 2026-07-08 · **Track:** B (P6) · **Owner:** Lead Architect
+**Predecessor:** AR88 (Track A archive) · **Companion:** `ARCHITECTURE_CONVERGENCE.md` (P1), `DOC_INDEX.md`
 
 **Why this file is the arbiter.** GoatCoin's vision documents describe a post-quantum,
 anti-monopolization compute *marketplace*. The code that actually runs is much smaller. This matrix
@@ -37,15 +37,25 @@ but with a load-bearing caveat) · **MVP-ONLY** (implemented, but only in C3 / o
 | 3 | **F6 anti-farm / Sybil density** | `goat-protocol::capability::evaluate_density`, `goat-net::density` (C3 only); root has device-agnostic fold/lottery but **not** F6 | ✗ | ✗ | ✓ | **MVP-ONLY** | "The running mesh detects and suppresses farms/Sybils" |
 | 4 | **Fraud proofs / challenge adjudication** | `goat-ledger::{ledger,actors}`, `goat-protocol::maturity::verify_posting` (C3 only) | ✗ | ✗ | ✓ | **MVP-ONLY** | "Fraud proofs protect the live network" |
 | 5 | **CET settlement + oracle** | `Dynamic-CETSettlement & Oracle …md` (design doc). **No implementation anywhere.** | ✗ | ✗ | ✗ | **DESIGN** | "CET settlement is operational" / "oracle-priced compute" |
-| 6 | **PQ authentication** (ML-DSA-65 sign/verify, ML-KEM-768 key agreement) | C1 `host_crypto` + C3. **Signatures real**; det-seed identities forgeable (identity-hardening). Crates **pre-1.0, not externally audited (A3)**. | ✓ sig / ◑ id | traits | ✓ | **PARTIAL** (C1) | "Prevents peer impersonation" / "unforgeable identity" / "externally audited" / "FIPS certified product" / "side-channel resistant" |
+| 6 | **PQ authentication** (ML-DSA-65 sign/verify, ML-KEM-768 key agreement) | C1 `host_crypto` + C3. **Signatures real**; det-seed identities forgeable (Council-1). Crates **pre-1.0, not externally audited (A3)**. | ✓ sig / ◑ id | traits | ✓ | **PARTIAL** (C1) | "Prevents peer impersonation" / "unforgeable identity" / "externally audited" / "FIPS certified product" / "side-channel resistant" |
 | 7 | **PQ-only, no classical fallback** (design invariant) | True in every config — no classical primitive is imported; SHA3-256 is real throughout. | ✓ | ✓ | ✓ | **SHIPPED** (invariant only — not an audit claim) | "Side-channel resistant" / "constant-time proven" |
-| 8 | **Post-quantum encrypted transport + handshake** | Real ML-KEM+AES + **MTU-safe chunking** (≤1200 B UDP, MTU-chunking). Identity secrecy + **A3** still open. Lab wire proven; full cross-NAT 1500-MTU field trial still residual. | ✓ crypto+chunk / ◑ id | traits | ✓ | **PARTIAL** (C1) | "Unforgeable identity" / "audited FIPS" / "side-channel resistant" / "proven on every residential NAT" without field evidence |
+| 8 | **Post-quantum encrypted transport + handshake** | Real ML-KEM+AES + **MTU-safe chunking** (≤1200 B UDP, Council-4). Identity secrecy + **A3** still open. Lab wire proven; full cross-NAT 1500-MTU field trial still residual. | ✓ crypto+chunk / ◑ id | traits | ✓ | **PARTIAL** (C1) | "Unforgeable identity" / "audited FIPS" / "side-channel resistant" / "proven on every residential NAT" without field evidence |
 | 9 | **Signed gossip: verify-before-forward** | Real verify + registry; det-seed impersonation risk; **A3 open**. | ✓ verify / ◑ id | ✓ | ✓ | **PARTIAL** (C1) | "Prevents peer impersonation" / "externally audited" |
 | 10 | **Anti-DoS: stateless cookie, single-use replay guard, hash-before-verify dedup, bounded ingress, session cap** | root `transport::{issue_cookie,CookieCache}`, `gossip::MessageCache`, `goatd` bounded `mpsc` + LRU session cap (RECON-11/12/14) | ✓ | ✓ | partial | **SHIPPED** | — (honest & load-bearing; this is the real strength of the running mesh) |
+| 11 | **Fail-closed identity + chain-id binding** (Track A) | root `goatd`: required genesis (strict 1952-B keys), required node secret, `chain_id_ok`, dev-escape gated | ✓ | ✓ (core consts) | n/a | **SHIPPED** | — (honest; see `SECURITY_QUICKFIXES.md`) |
 | 12 | **Decentralized compute marketplace** (task submit → distribute → execute → settle) | No task-execution, distribution-to-consumers, or settlement path in any config; C3 has *verification* rounds, not a market | ✗ | ✗ | ✗ (verification only) | **DESIGN** | "A working / production compute marketplace" |
 | 13 | **Execution isolation (GoatHAL / Vector 1.1)** | Host-edge out-of-process worker (`goat-worker` + `isolation` supervisor). Hostile probes (fs outside scratch, net, spawn, crash) **denied/contained**; fail-closed if worker missing. **Not** a production multi-OS GPU sandbox; Linux namespaces/seccomp design-only. | ✓ Phase-0 proof | n/a | oracle HAL | **PARTIAL** (C1 Phase-0) | "Secure multi-tenant sandbox product" / "safe to run arbitrary vLLM/Triton on any host" / marketplace |
+| 14 | **Stream G — USDT gas-abstraction rail** (four-action EIP-712 gateway, fee-token capability hard gate, wallet sponsorship registry, sponsored buy desk) **+ the attestor's Stream G engine** (quote / submit / outbox / reconcile, ten mounted HTTP routes) | `contracts/src/{StreamGTypes,FeeTokenRegistry,WalletSponsorshipRegistry,SponsoredBuyDesk,GoatRelayGateway}.sol` and `tools/goat-attestor/src/stream_g/`. **Neither tree is C1, C2 or C3** — this is a *fourth* location, off the deploy path: Docker ships none of it. | ✗ | ✗ | ✗ (**not** the `goatcoin-rs/` workspace) | **MVP-ONLY** — implemented and gate-enforced, and **three separate things must all change before any of it runs anywhere public**: `STREAM_G_ENABLED` defaults to `0`; deployment is Anvil `31337` only (`DeployStreamG` reverts `BaseSepoliaPhaseGated()` on 84532 and `ChainNotAllowed()` elsewhere); and there are **zero** public deployments — the only artifacts that exist are `contracts/deployments/31337.stream-g*.json`. | "Stream G is live / operational / available on mainnet or testnet" · "Gasless USDT transactions are supported" · "Pay fees in USDT" or "sponsor a wallet" as a present-tense capability · any earning or live-token language attached to Stream G |
 
 Legend: ✓ real & present · ◑ present but caveated (scaffold/primitive) · ✗ absent.
+
+> **A note on row 14's three ✗ marks, because they are easy to misread as "absent".** The Stream G
+> code exists, is substantial, and is enforced by a ten-step local gate. The ✗ marks say something
+> narrower and exact: it is present in **none of the three configurations this matrix is about**. C1
+> is the root deploy spine, C2 its `#![no_std]` core, C3 the `goatcoin-rs/` mechanism workspace —
+> Stream G is in `contracts/` and `tools/goat-attestor/`, which is why `MVP-ONLY` ("implemented, off
+> the deploy path") is the closest of the four defined `Status` values rather than a perfect fit. The
+> row's own text carries what the columns cannot.
 
 ---
 
@@ -57,7 +67,7 @@ Legend: ✓ real & present · ◑ present but caveated (scaffold/primitive) · �
 > audited; A3 open**), with fail-closed registry and chain-id binding (Track A). A Phase-0
 > **out-of-process execution isolation** harness (`goat-worker`) can contain hostile probe payloads
 > to a scratch dir / denied net-spawn, but it is **not** a production multi-OS ML sandbox. On the
-> default deterministic-seed testnet, **node private keys are publicly derivable** (identity-hardening). There
+> default deterministic-seed testnet, **node private keys are publicly derivable** (Council-1). There
 > is still **no token, no rewards, no useful-work marketplace, and no settlement**. It is safe to run
 > and easy to stop; it is **not** a secured or audited compute marketplace.
 
@@ -69,12 +79,12 @@ Legend: ✓ real & present · ◑ present but caveated (scaffold/primitive) · �
 |-----|---------|------------------------------------------------------|
 | `ALPHA_PILOT.md` | "experimental verification mesh + verification scaffolding", "placeholder signatures", "no value at stake" | "post-quantum secured", "earn rewards", "production marketplace" |
 | `DEPLOY.md` | "reference backends active, NOT FOR PRODUCTION", "Backend Swap Checklist pending" | "PQ crypto shipped", "audited" |
-| `README.md` / README.md | the *vision* (clearly labeled as design intent) + a pointer to this matrix | vision language presented as current runtime capability |
+| `README.md` / `START_HERE.md` | the *vision* (clearly labeled as design intent) + a pointer to this matrix | vision language presented as current runtime capability |
 | `ARCHITECTURE.md` | the sealed-core design + the frozen-trait contract | "ML-DSA-65 / ML-KEM-768 implemented" without the §6.4 placeholder caveat |
 
 **Verification of current docs (2026-07-08):** `ALPHA_PILOT.md` and `DEPLOY.md` already carry the
 required disclaimers and **pass**. `ARCHITECTURE.md` §3 needed a one-line placeholder caveat added
-next to the PQ-primitives list (done this turn, cross-referencing §6.4). `README.md` / README.md
+next to the PQ-primitives list (done this turn, cross-referencing §6.4). `README.md` / `START_HERE.md`
 gained a "Runtime reality" pointer to this matrix (done this turn).
 
 ---

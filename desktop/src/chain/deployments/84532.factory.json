@@ -1,0 +1,8 @@
+{
+  "buyDeskFactory": null,
+  "chainId": 84532,
+  "enrollmentRegistry": null,
+  "goatCoin": null,
+  "mockUSDT": null,
+  "note": "Placeholder until Stream B testnet-up.ps1 deploys BuyDeskFactory. Fresh v2 only (do not point at retired v1)."
+}

@@ -1,19 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   ACCOUNT_MANAGED_NOTE,
-  AUTOCONFIG_NOTE,
-  autoConfigNote,
+  applyFoldGateStatus,
+  AUTO_UNLINKED_NOTE,
+  clearFoldGateNote,
   CREDIT_LAG_NOTE,
   enginePolling,
+  finishingNote,
+  foldGateAfterStatus,
+  getFoldGateNote,
   isPausedState,
-  isValidPasskeyInput,
   isWaitingState,
+  LINKED_ACCOUNT_WARNING,
+  NO_FAH_IDENTITY_BLOCKED,
   normalizeProgress,
   pauseResumeLabel,
-  showTeamBrand,
+  setFoldGateNote,
+  shouldBlockStartForIdentity,
+  shouldGateOnWalletSwitch,
   STOP_SUBTEXT,
-  TEAM_STATS_URL,
   unitLooksStuck,
+  unitRowModel,
 } from "./Miner.jsx";
 
 describe("normalizeProgress", () => {
@@ -85,14 +92,6 @@ describe("Stop control", () => {
   });
 });
 
-describe("auto-config job-card note", () => {
-  it("states the CPU-minus-2 + GPU auto-config and points at the power control", () => {
-    expect(AUTOCONFIG_NOTE).toBe(
-      "Uses all CPU cores minus 2 and available GPUs — adjust with the power control."
-    );
-  });
-});
-
 describe("engine auto-polling (replaces Re-check)", () => {
   it("keeps polling while missing/provisioning/error to auto-advance", () => {
     expect(enginePolling("missing")).toBe(true);
@@ -108,18 +107,10 @@ describe("engine auto-polling (replaces Re-check)", () => {
   });
 });
 
-// FIX C/D — account-linked honesty: the job-card auto-config note must NOT claim Goat set
-// CPU/GPU when the client is bound to a Folding@home account (it ignores local config).
-describe("account-linked auto-config note", () => {
-  it("shows the CPU-minus-2 + GPU note only for an unlinked client", () => {
-    expect(autoConfigNote(false)).toBe(AUTOCONFIG_NOTE);
-    expect(autoConfigNote(undefined)).toBe(AUTOCONFIG_NOTE);
-    expect(autoConfigNote(null)).toBe(AUTOCONFIG_NOTE);
-  });
-
-  it("shows the account-managed note when linked, never the CPU/GPU claim", () => {
-    expect(autoConfigNote(true)).toBe(ACCOUNT_MANAGED_NOTE);
-    // The linked note must not repeat the "cores minus 2" claim Goat cannot honor.
+// FIX C/D — account-linked honesty: the engine hint must NOT claim Goat set CPU/GPU when the
+// client is bound to a Folding@home account (it ignores local config).
+describe("account-managed engine hint", () => {
+  it("never repeats the CPU/GPU claim Goat cannot honor when linked", () => {
     expect(ACCOUNT_MANAGED_NOTE.toLowerCase()).not.toContain("minus 2");
     expect(ACCOUNT_MANAGED_NOTE.toLowerCase()).toContain("account");
   });
@@ -157,51 +148,127 @@ describe("credit-lag copy", () => {
 // Copy law: no mine/mining/wage/paycheck/salary/guaranteed in the managed control strings.
 describe("copy law", () => {
   it("avoids earning/wage vocabulary in control copy", () => {
-    const corpus = [STOP_SUBTEXT, AUTOCONFIG_NOTE, ACCOUNT_MANAGED_NOTE, CREDIT_LAG_NOTE]
+    const corpus = [
+      STOP_SUBTEXT,
+      ACCOUNT_MANAGED_NOTE,
+      CREDIT_LAG_NOTE,
+      NO_FAH_IDENTITY_BLOCKED,
+      LINKED_ACCOUNT_WARNING,
+      AUTO_UNLINKED_NOTE,
+      finishingNote("GOAT-Old", "GOAT-New"),
+    ]
       .join(" ")
       .toLowerCase();
     for (const banned of ["mine", "mining", "wage", "paycheck", "salary", "guaranteed"]) {
       expect(corpus.includes(banned)).toBe(false);
     }
   });
-});
 
-// Team brand: GOAT team 1068318 only (passkey no longer required — retired shared secret).
-describe("showTeamBrand", () => {
-  it("shows for the GOAT team regardless of passkey flags", () => {
-    expect(showTeamBrand({ team: "1068318", passkey_is_default: true })).toBe(true);
-    expect(showTeamBrand({ team: "1068318", passkey_is_default: false, passkey_set: false })).toBe(
-      true,
-    );
-    expect(showTeamBrand({ team: "1068318", passkey_set: true })).toBe(true);
+  it("B6 blocked-Start copy points the user at the Wallet tab bind path", () => {
+    expect(NO_FAH_IDENTITY_BLOCKED).toContain("Wallet tab");
   });
-  it("hides for a custom team", () => {
-    expect(showTeamBrand({ team: "42", passkey_is_default: true })).toBe(false);
-  });
-  it("hides while identity is not loaded", () => {
-    expect(showTeamBrand(null)).toBe(false);
-  });
-});
 
-describe("isValidPasskeyInput", () => {
-  it("accepts empty (base score works without a passkey)", () => {
-    expect(isValidPasskeyInput("")).toBe(true);
-    expect(isValidPasskeyInput("   ")).toBe(true);
+  it("B8 linked-account warning tells the user to unlink", () => {
+    expect(LINKED_ACCOUNT_WARNING.toLowerCase()).toContain("unlink");
   });
-  it("accepts exactly 32 hex chars", () => {
-    expect(isValidPasskeyInput("31415926535897932384626433832795")).toBe(true);
-    expect(isValidPasskeyInput("abcdef0123456789ABCDEF0123456789")).toBe(true);
+
+  it("B7b RESOLVED (option 3): the standing warning discloses the automatic unlink IN ADVANCE", () => {
+    const lower = LINKED_ACCOUNT_WARNING.toLowerCase();
+    expect(lower).toContain("automatically unlinks this machine");
+    expect(lower).toContain("web client");
+    // Superseded claim (GoatApp said it was unable to unlink) must not reappear.
+    expect(lower).not.toContain("cannot unlink");
   });
-  it("rejects wrong length or non-hex", () => {
-    expect(isValidPasskeyInput("deadbeef")).toBe(false);
-    expect(isValidPasskeyInput("g".repeat(32))).toBe(false);
-    expect(isValidPasskeyInput("0".repeat(31))).toBe(false);
-    expect(isValidPasskeyInput("0".repeat(33))).toBe(false);
+
+  it("B7b RESOLVED: the post-unlink note is honest about what happened and what re-linking needs", () => {
+    const lower = AUTO_UNLINKED_NOTE.toLowerCase();
+    expect(lower).toContain("automatically unlinked");
+    expect(lower).toContain("overriding your goat username");
+    expect(lower).toContain("web client");
+  });
+
+  it("B4a finishingNote names both the old and new wallet", () => {
+    const note = finishingNote("GOAT-Old", "GOAT-New");
+    expect(note).toContain("GOAT-Old");
+    expect(note).toContain("GOAT-New");
   });
 });
 
-describe("TEAM_STATS_URL", () => {
-  it("points at the public Folding@home team stats page", () => {
-    expect(TEAM_STATS_URL).toBe("https://stats.foldingathome.org/team/1068318");
+describe("shouldBlockStartForIdentity", () => {
+  it("blocks when the resolver found no username", () => {
+    expect(shouldBlockStartForIdentity(null)).toBe(true);
+    expect(shouldBlockStartForIdentity({ username: "" })).toBe(true);
+  });
+  it("allows when a username resolved", () => {
+    expect(shouldBlockStartForIdentity({ username: "GOAT-Bob" })).toBe(false);
+  });
+});
+
+describe("shouldGateOnWalletSwitch", () => {
+  it("only gates on a real switch between two different non-null addresses", () => {
+    expect(shouldGateOnWalletSwitch(null, "0xa")).toBe(false); // first unlock
+    expect(shouldGateOnWalletSwitch("0xa", null)).toBe(false); // lock
+    expect(shouldGateOnWalletSwitch("0xa", "0xa")).toBe(false); // no-op re-render
+    expect(shouldGateOnWalletSwitch("0xa", "0xb")).toBe(true); // real switch
+  });
+});
+
+// FIX-A: gate clearing is decoupled from the switch-effect instance that set the note, so a
+// cancelled/early-returned/finish-rejected effect can never leave Start bricked.
+describe("fold gate lifecycle (FIX-A)", () => {
+  beforeEach(() => {
+    clearFoldGateNote();
+  });
+
+  it("foldGateAfterStatus keeps the note only while the run is active", () => {
+    expect(foldGateAfterStatus("note", true)).toBe("note");
+    expect(foldGateAfterStatus("note", false)).toBeNull();
+    expect(foldGateAfterStatus(null, true)).toBeNull();
+    expect(foldGateAfterStatus(null, false)).toBeNull();
+  });
+
+  it("note set → idle observed → cleared (authoritative clearer)", () => {
+    setFoldGateNote(finishingNote("GOAT-Old", "GOAT-New"));
+    applyFoldGateStatus(true); // still folding — gate holds
+    expect(getFoldGateNote()).toContain("GOAT-Old");
+    applyFoldGateStatus(false); // idle observed — gate lifts
+    expect(getFoldGateNote()).toBeNull();
+    applyFoldGateStatus(false); // idempotent once lifted
+    expect(getFoldGateNote()).toBeNull();
+  });
+
+  it("a re-switch replaces a stranded note instead of leaving it to a cancelled run", () => {
+    // First switch set a note, then was cancelled mid-poll (never cleared).
+    setFoldGateNote(finishingNote("GOAT-A", "GOAT-B"));
+    // Second switch run owns the gate: clears up front (App does this at the top of every run)…
+    clearFoldGateNote();
+    // …so an early-return on idle leaves Start unbricked…
+    expect(getFoldGateNote()).toBeNull();
+    // …and an active run gets a fresh, correctly-named note.
+    setFoldGateNote(finishingNote("GOAT-B", "GOAT-A"));
+    expect(getFoldGateNote()).toContain("GOAT-B");
+    expect(getFoldGateNote()).not.toContain("GOAT-A's"); // old pair's possessive gone
+  });
+
+  it("a rejected backend_finish fail-opens the gate (App's reject path clears)", () => {
+    setFoldGateNote(finishingNote("GOAT-Old", "GOAT-New"));
+    clearFoldGateNote(); // App's catch on backend_finish reject
+    expect(getFoldGateNote()).toBeNull();
+  });
+});
+
+describe("unitRowModel (dup-project fix + science tag + per-row dump)", () => {
+  const unit = { id: "u1", row_key: "u1", project: "18201", progress: 0, progress_pct: "0.0", state: "RUN", cause: "cancer", resource: "GPU" };
+  it("keys rows by row_key, never project", () => {
+    const rows = [unit, { ...unit, row_key: "u1#1", progress: 0.4 }].map((u) => unitRowModel(u, new Map()));
+    expect(rows[0].key).toBe("u1");
+    expect(rows[1].key).toBe("u1#1");
+  });
+  it("labels science from per-unit cause", () => {
+    expect(unitRowModel(unit, new Map()).causeLabel).toBe("Cancer research");
+  });
+  it("shows Dump only when the stuck tracker says stuck", () => {
+    expect(unitRowModel(unit, new Map([["u1", false]])).showDump).toBe(false);
+    expect(unitRowModel(unit, new Map([["u1", true]])).showDump).toBe(true);
   });
 });

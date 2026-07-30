@@ -1,11 +1,18 @@
 // Persistent, non-dismissible honesty banner. Copy is locked — see
-// docs/superpowers/plans/2026-07-11-season0-fullsystem.md (Global Constraints: copy rules) and
-// Council/Advisor_Brief_Capitalist_Paycheck_Coin_Roadmap.md. Do not soften, shorten, or hide this.
+// the "Season-0 Full System Implementation Plan (Miner + Wallet + Free-Market Mint)"
+// (Global Constraints: copy rules) and the locked founder economic decisions.
+// Do not soften, shorten, or hide this.
+import { APP_VERSION_LABEL } from "../version.js";
+
 export default function HonestyBanner() {
   return (
     <div className="honesty-banner" role="note">
-      Testnet GOAT — not money. Real public-good work, pilot token. Price is a posted bid and may
-      find zero buyers. Sponsor #1 is the founder; this proves the mechanism, not external demand.
+      <span>
+        Testnet GOAT — not money. Real public-good work, pilot token. Price is a posted bid and
+        may find zero buyers. Sponsor #1 is the founder; this proves the mechanism, not external
+        demand.
+      </span>
+      <span className="honesty-banner-version">{APP_VERSION_LABEL}</span>
     </div>
   );
 }

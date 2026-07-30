@@ -8,10 +8,21 @@
 #     GoatCoin's "WorkMinter is the only mint path" stays true — there is no dev mint).
 # The season0-fah job is intentionally NOT created here so the Ops-tab button can be
 # exercised in the UI. Re-runnable: each run redeploys and refreshes the copied JSONs.
+#
+# -RpcUrl EXISTS SO THIS SCRIPT CAN BE SMOKE-TESTED, and it defaults to exactly
+# what was hardcoded here before, so the runbook command is unchanged. Added
+# 2026-07-29 with tools/goat-attestor/smoke-standup.ps1, which runs this file
+# against an EPHEMERAL anvil on a free port in an isolated copy of contracts/ --
+# because the gate covers what it runs, and it has never run this. Two of the
+# three auxiliary-script defects on record were in this file and its twin.
+param(
+    [string] $RpcUrl = "http://127.0.0.1:8545"
+)
+
 $ErrorActionPreference = "Stop"
 $env:PATH = "$env:USERPROFILE\.foundry\bin;$env:PATH"
 
-$RPC         = "http://127.0.0.1:8545"
+$RPC         = $RpcUrl
 $SAFE        = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"   # anvil account 0
 $SAFE_KEY    = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 $RESERVE     = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"   # anvil account 2
@@ -39,7 +50,16 @@ function Test-Rpc {
 # --- 1. anvil ---------------------------------------------------------------
 if (-not (Test-Rpc)) {
     Write-Host "Starting anvil in a new window..."
-    Start-Process -FilePath "anvil"
+    # THE PORT COMES FROM -RpcUrl, not from anvil's default. Before this, a
+    # non-default -RpcUrl would have started anvil on 8545 and then polled a port
+    # nothing was listening on, failing 20 seconds later with "anvil did not
+    # answer" -- a message that blames the node for the caller's argument.
+    $anvilPort = [regex]::Match($RPC, ':(\d+)')
+    if ($anvilPort.Success -and ($anvilPort.Groups[1].Value -ne '8545')) {
+        Start-Process -FilePath "anvil" -ArgumentList @('--port', $anvilPort.Groups[1].Value)
+    } else {
+        Start-Process -FilePath "anvil"
+    }
     $up = $false
     for ($i = 0; $i -lt 40; $i++) {
         Start-Sleep -Milliseconds 500
@@ -100,7 +120,8 @@ try {
         Write-Host "dev-seed job already minted - skipping GOAT seed"
     }
 
-    # --- 6b. BuyDeskFactory (donor multi-desk design, 2026-07-13): any
+    # --- 6b. BuyDeskFactory (the "Donor BuyDesk Factory + Multi-Desk UI — Design"
+    #     spec): any
     #     enrolled wallet can become a donor from its own wallet via
     #     factory.createDesk(); the founder's desk is created THROUGH the
     #     factory too, so founder + donor desks share one DeskCreated index. --
@@ -117,7 +138,8 @@ try {
     cast send $FACTORY "createDesk(string)" "Founder Desk" --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
     $FOUNDER_DESK = (cast call $FACTORY "deskOf(address)(address)" $SAFE --rpc-url $RPC).Trim()
 
-    # Allowance model (spec 2026-07-13-allowance-buydesk-design): a desk spends
+    # Allowance model (the "Allowance-Based (Wallet-Direct) BuyDesk — Design"
+    # spec): a desk spends
     # the owner's WALLET USDT up to an approved cap — there is NO fund step and
     # the desk never custodies USDT. Set the founder desk's cap to 5,000 USDT
     # (approve) and open a long trade session with no per-seller limit, so the
@@ -131,19 +153,43 @@ try {
     Copy-Item (Join-Path $PSScriptRoot "deployments\31337.factory.json") `
               (Join-Path $PSScriptRoot "..\desktop\src\chain\deployments\31337.factory.json") -Force
 
-    # --- 7. EpochSettlement deploy (optimistic FAH-payout lane, spec 2026-07-13) ---
+    # --- 7. EpochSettlement deploy (optimistic FAH-payout lane; the
+    #        "GOAT Optimistic Settlement — Consolidated Design" spec) ---
     # Fresh HoldbackEscrow — the free-market one above is vault-locked to WorkMinter
     # (setVault is one-shot), so the settlement lane needs its own.
     $env:GOAT_ADDRESS     = $GOAT
     $env:REGISTRY_ADDRESS = $REGISTRY
     $env:WATCHER_ADDRESS  = $WATCHER
-    forge script script/DeployEpochSettlement.s.sol --rpc-url $RPC --broadcast
+    # --sig is REQUIRED, not decorative. `de4a875` gave DeployEpochSettlement a
+    # second entry point -- `run(string manifestPath)` alongside `run()` -- so the
+    # two deploy tests could stop racing on one tracked manifest. That overload
+    # makes `forge script` ambiguous, and without --sig this line dies with
+    # "Multiple functions with the same name `run` found in the ABI".
+    #
+    # Worth noting WHY it went unnoticed: a fix aimed at TEST isolation broke the
+    # LOCAL DEV STANDUP, and run-full-gate.ps1 never invokes dev-up.ps1 -- so the
+    # gate was green through the whole regression. The gate covers what it runs.
+    forge script script/DeployEpochSettlement.s.sol --sig "run()" --rpc-url $RPC --broadcast
     if ($LASTEXITCODE -ne 0) { throw "EpochSettlement deploy failed" }
 
     $e = Get-Content (Join-Path $PSScriptRoot "deployments\31337.epoch.json") -Raw | ConvertFrom-Json
     $EPOCH_ESCROW   = $e.epochHoldbackEscrow
     $EPOCH_SETTLE   = $e.epochSettlement
     $EPOCH_RESOLVER = $e.founderResolver
+
+    # --- 7b. verify the resolver pin BEFORE wiring --------------------------------
+    # FounderResolver.settlement is immutable and was set from a PREDICTED CREATE
+    # address in DeployEpochSettlement.s.sol. That script's equality guard is a local
+    # comparison inside a Script contract that is never deployed: it runs only in
+    # forge's simulation EVM and emits no transaction. setResolver below validates
+    # only non-zero, so an unchecked pin would be re-blessed here rather than caught.
+    # Assert it on-chain before anything is wired. (String -ne is case-insensitive in
+    # PowerShell, which is what we want: one side may be EIP-55 checksummed, one not.)
+    $EPOCH_PINNED = ([string](cast call $EPOCH_RESOLVER "settlement()(address)" --rpc-url $RPC)).Trim()
+    if ($EPOCH_PINNED -ne $EPOCH_SETTLE) {
+        throw "founderResolver.settlement() = '$EPOCH_PINNED' but epochSettlement = '$EPOCH_SETTLE' - resolver is mis-pinned; refusing to wire"
+    }
+    Write-Host "resolver pin verified: $EPOCH_RESOLVER -> $EPOCH_PINNED"
 
     # --- 8. wire EpochSettlement (the five NEXT calls the script prints) ----------
     cast send $EPOCH_ESCROW "setVault(address)" $EPOCH_SETTLE --private-key $SAFE_KEY --rpc-url $RPC | Out-Null

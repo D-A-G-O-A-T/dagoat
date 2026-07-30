@@ -1,7 +1,9 @@
-# D.A. G.O.A.T. Engine — local multi-node lab guide (`goatd` + Docker)
+# D.A. G.O.A.T. — Alpha Pilot Welcome Guide
 
-How to run the **D.A. G.O.A.T. Engine** (the `goatd` verification-mesh runtime) on your machine:
-what the node does, how to limit CPU (power/noise dial), and how containers stay isolated from the host.
+Thank you for running a **D.A. G.O.A.T.** node in our **15-Node Alpha Pilot**. You are one of the first people
+anywhere to help a post-quantum, anti-monopolization compute network find its feet. This guide is
+short by design — read it once, and you'll know exactly what your machine is doing, how to keep it
+quiet, and how it stays walled off from the rest of your computer.
 
 > **This is an experimental verification mesh — not yet a secured compute marketplace.** It is safe
 > to run and easy to stop, but it is *not* finished: **ML-DSA-65 / ML-KEM-768 / AES-256-GCM are real
@@ -104,7 +106,7 @@ computer.
 
 ---
 
-## Node identity seeds (identity-hardening — read this)
+## Node identity seeds (Council-1 — read this)
 
 | Mode | How | Identity secrecy |
 |------|-----|------------------|
@@ -113,7 +115,7 @@ computer.
 
 Never commit `keys/*/signing_seed`. Production and `--features mainnet` **always refuse** deterministic seeds.
 
-### Network note (handshake size / MTU — MTU-chunking)
+### Network note (handshake size / MTU — Council-4)
 
 Logical handshake messages are multi-kilobyte (CookieEcho ~6.5 KB), but the daemon **chunks** them into
 **≤ 1200-byte** UDP datagrams so a 1500-byte path does not depend on IP fragmentation. You should see

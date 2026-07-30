@@ -1,0 +1,19 @@
+{
+  "chainId": 31337,
+  "deploymentManifestHash": "0x05f8b33ddff7855f64c5f38553cadea8648f5d1889ca17624a59f9f507d26491",
+  "deskOwner": "0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496",
+  "enrollmentRegistry": "0x104fBc016F4bb334D775a19E8A6510109AC63E00",
+  "feeSafe": "0xD1CCc21678e1B7015A472216B2F501f421645b43",
+  "feeScheduleHash": "0x1c663d43fccc550dd95ef9dcd469eb12ac98006d355fea4ce9fcdc002ff8d952",
+  "feeToken": "0xDDc10602782af652bB913f7bdE1fD82981Db7dd9",
+  "feeTokenRegistry": "0x7FdB3132Ff7D02d8B9e221c61cC895ce9a4bb773",
+  "goatCoin": "0x037eDa3aDB1198021A9b2e88C22B464fD38db3f3",
+  "goatRelayGateway": "0x4ff05a443250A64a18C68CEdd2122cFDf3872140",
+  "phase": "G1",
+  "policySafe": "0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496",
+  "quoteSigner": "0xeBD5a85005dCC98dabB7a2888De82D43c5A6957E",
+  "recoverySafe": "0xb8705214E170151048Eff0A1eDE1824FfF19CB9C",
+  "schemaVersion": 1,
+  "sponsoredBuyDesk": "0xD76ffbd1eFF76C510C3a509fE22864688aC3A588",
+  "walletSponsorshipRegistry": "0xfD07C974e33dd1626640bA3a5acF0418FaacCA7a"
+}

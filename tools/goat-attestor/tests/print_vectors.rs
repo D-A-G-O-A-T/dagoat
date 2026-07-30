@@ -1,7 +1,7 @@
 //! Regenerates pinned Merkle hex for `contracts/test/RustDaemonMerkleParity.t.sol`.
 //! Run: `cargo test --test print_vectors -- --nocapture`
 
-use goat_attestor::merkle::{Leaf, MerkleTree, abi_encode_address_uint256, leaf_hash};
+use goat_attestor::merkle::{abi_encode_address_uint256, leaf_hash, Leaf, MerkleTree};
 
 #[test]
 fn print_pinned_vectors() {

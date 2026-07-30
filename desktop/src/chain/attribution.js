@@ -15,6 +15,9 @@ import {
   EPOCH_SETTLEMENT_ABI,
   WORKER_BINDING_ABI,
 } from "./abis.js";
+import { relayerAuthHeaders } from "./relayerHeaders.js";
+import { waitForReceipt } from "./receipt.js";
+import { formatHttpGateError } from "./errors.js";
 
 /** Built-in fallback for local pilot only — never a production assumption. */
 export const DEV_RELAYER_URL = "http://127.0.0.1:8787";
@@ -130,7 +133,7 @@ export function buildEnrollTypedData({ chainId, enrollmentRegistry, wallet, nonc
  * POST to the attestor relayer. Returns { ok, tx_hash?, error? }.
  * `fetchImpl` is injectable for tests.
  */
-/** Map browser/network failures to an operator-facing relayer hint. */
+/** Map browser/network failures to lab vs volunteer-facing relayer hints (Stream C T4). */
 export function formatRelayerFetchError(err, relayerUrl = RELAYER_URL) {
   const raw = err?.message || String(err || "Relayer unreachable");
   const lower = raw.toLowerCase();
@@ -142,11 +145,18 @@ export function formatRelayerFetchError(err, relayerUrl = RELAYER_URL) {
     lower.includes("fetch failed")
   ) {
     const base = resolveRelayerUrl(relayerUrl);
+    if (isLocalRelayerUrl(base)) {
+      return (
+        `Relayer unreachable at ${base} (${raw}). ` +
+        `Gasless bind needs goat-attestor: ` +
+        `cd tools/goat-attestor && cargo run -- serve-relayer --bind 127.0.0.1:8787 ` +
+        `(with RELAYER_PRIVATE_KEY + anvil). Or use wallet-gas fallback (ETH on this wallet).`
+      );
+    }
     return (
-      `Relayer unreachable at ${base} (${raw}). ` +
-      `Gasless bind needs goat-attestor: ` +
-      `cd tools/goat-attestor && cargo run -- serve-relayer --bind 127.0.0.1:8787 ` +
-      `(with RELAYER_PRIVATE_KEY + anvil). Or use wallet-gas fallback (ETH on Rookie).`
+      `Relayer unreachable (${raw}). ` +
+      `Check your connection and try again. If this continues, contact the pilot operator. ` +
+      `Wallet-gas bind needs a little testnet ETH on this wallet.`
     );
   }
   return raw;
@@ -165,7 +175,7 @@ export async function postRelay(path, body, { relayerUrl, fetchImpl = fetch, tim
     try {
       res = await fetchImpl(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: relayerAuthHeaders(),
         body: JSON.stringify(body, (_k, v) => (typeof v === "bigint" ? v.toString(10) : v)),
         ...(ctrl ? { signal: ctrl.signal } : {}),
       });
@@ -174,25 +184,47 @@ export async function postRelay(path, body, { relayerUrl, fetchImpl = fetch, tim
     }
   } catch (err) {
     const aborted = err?.name === "AbortError" || /aborted/i.test(String(err?.message || err));
+    const local = isLocalRelayerUrl(base);
     return {
       ok: false,
       error: aborted
-        ? `Relayer timed out after ${timeoutMs}ms at ${base} — is serve-relayer hung? Or fund ETH for wallet-gas bind.`
+        ? local
+          ? `Relayer timed out after ${timeoutMs}ms at ${base} — is serve-relayer hung? Or fund ETH for wallet-gas bind.`
+          : `Relayer timed out after ${timeoutMs}ms. Check your connection or try again later. Wallet-gas bind needs testnet ETH on this wallet.`
         : formatRelayerFetchError(err, base),
       relayerDown: true,
     };
   }
-  let data = null;
+  // Prefer text → JSON so CF Access HTML (302/403) is detectable (consultant hazard #2).
+  let bodyText = "";
   try {
-    data = await res.json();
+    bodyText = typeof res.text === "function" ? await res.text() : "";
   } catch {
-    data = null;
+    bodyText = "";
+  }
+  let data = null;
+  if (bodyText) {
+    try {
+      data = JSON.parse(bodyText);
+    } catch {
+      data = null;
+    }
   }
   if (!res.ok) {
+    const gate = formatHttpGateError(res.status, bodyText, data);
     return {
       ok: false,
       tx_hash: data?.tx_hash ?? null,
-      error: data?.error || `HTTP ${res.status}`,
+      error: gate || data?.error || `HTTP ${res.status}`,
+      accessGate: Boolean(gate && /access gate|non-JSON/i.test(gate)),
+    };
+  }
+  if (data == null && bodyText && looksNonJsonBody(bodyText)) {
+    const gate = formatHttpGateError(res.status || 200, bodyText, null);
+    return {
+      ok: false,
+      error: gate || "Relayer returned a non-JSON success body.",
+      accessGate: true,
     };
   }
   return {
@@ -200,6 +232,11 @@ export async function postRelay(path, body, { relayerUrl, fetchImpl = fetch, tim
     tx_hash: data?.tx_hash ?? null,
     error: data?.error ?? null,
   };
+}
+
+function looksNonJsonBody(text) {
+  const t = String(text || "").trim();
+  return t.length > 0 && !t.startsWith("{") && !t.startsWith("[");
 }
 
 export function postBindRelay(body, opts) {
@@ -433,7 +470,7 @@ export async function bindViaWallet({
       functionName: "bind",
       args: [username],
     });
-    await publicClient.waitForTransactionReceipt({ hash, timeout: 30_000 });
+    await waitForReceipt(publicClient, { hash });
     return { ok: true, tx_hash: hash, mode: "wallet-gas" };
   } catch (err) {
     return {
@@ -471,7 +508,7 @@ export async function enrollViaWallet({ publicClient, walletClient, account, cha
       functionName: "enrollSelf",
       args: [],
     });
-    await publicClient.waitForTransactionReceipt({ hash, timeout: 30_000 });
+    await waitForReceipt(publicClient, { hash });
     return { ok: true, tx_hash: hash, mode: "wallet-gas" };
   } catch (err) {
     return {
@@ -489,7 +526,7 @@ function formatWalletGasError(err, action) {
     return (
       `${action} needs ETH gas on this wallet (balance too low). ` +
       `Prefer gasless: start tools/goat-attestor serve-relayer on :8787, then Bind & enroll again. ` +
-      `Or fund a little anvil ETH to Rookie. MockUSDT is not gas.`
+      `Or fund a little anvil ETH on this wallet. MockUSDT is not gas.`
     );
   }
   return raw;
@@ -572,4 +609,26 @@ export function usernameMismatch(fahUsername, boundUsername) {
   const b = (boundUsername ?? "").trim();
   if (!a || !b) return false;
   return a !== b;
+}
+
+/** The chain-bound GOAT username for a wallet, or null (not bound / not deployed
+ *  / read failure). Import-path onboarding uses this to adopt an existing bind. */
+export async function readBoundUsername(networkId, address, deps = {}) {
+  try {
+    const { getDeployment, isDeployed } = deps.addresses ?? (await import("./addresses.js"));
+    const { getPublicClient } = deps.client ?? (await import("./client.js"));
+    if (!isDeployed(networkId)) return null;
+    const d = getDeployment(networkId);
+    if (!d?.workerBinding) return null;
+    const status = await readEarningStatus(getPublicClient(networkId), {
+      workerBinding: d.workerBinding,
+      epochSettlement: d.epochSettlement,
+      enrollmentRegistry: d.enrollmentRegistry,
+      wallet: address,
+    });
+    const bound = (status?.username ?? "").trim();
+    return bound || null;
+  } catch {
+    return null;
+  }
 }

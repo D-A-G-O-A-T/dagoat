@@ -42,6 +42,10 @@ contract EpochSettlementKeeperFeeTest is Test {
         goat = new GoatCoin("GoatCoin", "GOAT", safe, reg);
         escrow = new HoldbackEscrow(safe, goat, reserve);
         binding = new WorkerBinding();
+        // Resolver live from construction (see DeployEpochSettlement): predict the
+        // settlement's CREATE address so the mutually-immutable pair can be wired at deploy.
+        address predictedSettle = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        resolver = new FounderResolver(founder, predictedSettle);
         settle = new EpochSettlement(
             safe,
             goat,
@@ -55,10 +59,10 @@ contract EpochSettlementKeeperFeeTest is Test {
             WINDOW,
             PBOND,
             CBOND,
-            address(0),
+            address(resolver),
             watcher
         );
-        resolver = new FounderResolver(founder, address(settle));
+        assertEq(address(settle), predictedSettle, "CREATE address prediction drifted");
         vm.startPrank(safe);
         escrow.setVault(address(settle));
         goat.setMinter(address(settle), true);
@@ -83,6 +87,13 @@ contract EpochSettlementKeeperFeeTest is Test {
 
     function _root2(bytes32 l0, bytes32 l1) internal pure returns (bytes32) {
         return l0 < l1 ? keccak256(abi.encode(l0, l1)) : keccak256(abi.encode(l1, l0));
+    }
+
+    /// HoldbackEscrow jobId used by the epoch lane: one job per (epoch, worker), so no
+    /// worker's release can reach a co-worker's credit. Re-derived here rather than read
+    /// back from EpochSettlement so these tests pin the convention independently.
+    function _hbJob(uint256 epoch, address worker) internal pure returns (bytes32) {
+        return keccak256(abi.encode(epoch, worker));
     }
 
     function _propose(uint256 epoch) internal {
@@ -138,7 +149,7 @@ contract EpochSettlementKeeperFeeTest is Test {
         assertEq(goat.balanceOf(alice), liquid);
         assertEq(goat.balanceOf(keeper), fee);
         assertEq(settle.lastClaimedCumulative(alice), aScore);
-        assertEq(escrow.holdbackOf(bytes32(uint256(2)), alice), hb);
+        assertEq(escrow.holdbackOf(_hbJob(2, alice), alice), hb);
     }
 
     function test_claim_keeperFee_liquidLessThanFee() public {
@@ -165,7 +176,7 @@ contract EpochSettlementKeeperFeeTest is Test {
         // Fee takes entire liquid; worker gets 0 liquid; holdback still full from gross
         assertEq(goat.balanceOf(alice), 0);
         assertEq(goat.balanceOf(keeper), liquid);
-        assertEq(escrow.holdbackOf(bytes32(uint256(2)), alice), hb);
+        assertEq(escrow.holdbackOf(_hbJob(2, alice), alice), hb);
         assertEq(settle.lastClaimedCumulative(alice), aScore);
     }
 
@@ -189,7 +200,7 @@ contract EpochSettlementKeeperFeeTest is Test {
         uint256 hb = gross * HB_BPS / 10_000;
         // Alice nets gross - holdback (fee minted to herself)
         assertEq(goat.balanceOf(alice), gross - hb);
-        assertEq(escrow.holdbackOf(bytes32(uint256(2)), alice), hb);
+        assertEq(escrow.holdbackOf(_hbJob(2, alice), alice), hb);
         assertEq(settle.lastClaimedCumulative(alice), aScore);
     }
 
@@ -215,7 +226,7 @@ contract EpochSettlementKeeperFeeTest is Test {
         uint256 liquid = gross - hb;
 
         assertEq(goat.balanceOf(alice), liquid);
-        assertEq(escrow.holdbackOf(bytes32(uint256(2)), alice), hb);
+        assertEq(escrow.holdbackOf(_hbJob(2, alice), alice), hb);
         assertEq(settle.lastClaimedCumulative(alice), aScore);
         assertEq(goat.balanceOf(thirdParty), 0);
     }

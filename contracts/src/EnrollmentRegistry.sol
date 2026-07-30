@@ -17,6 +17,7 @@ contract EnrollmentRegistry is EIP712 {
 
     error NotSafe();
     error Blacklisted();
+    error AlreadyEnrolled();
     error ExpiredSignature();
     error BadSignature();
 
@@ -73,6 +74,7 @@ contract EnrollmentRegistry is EIP712 {
 
     function _enroll(address wallet) internal {
         if (blacklisted[wallet]) revert Blacklisted();
+        if (enrolled[wallet]) revert AlreadyEnrolled();
         enrolled[wallet] = true;
         emit Enrolled(wallet, true, bytes32(0));
     }

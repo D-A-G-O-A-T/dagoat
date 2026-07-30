@@ -14,7 +14,7 @@
 >
 > **Defensive purpose statement.** This is defensive validation of a decentralized compute
 > network's verification and settlement mechanisms; the goal is hardening prior to public
-> exposure. Per the project's defensive-language convention (adversarial-node framing),
+> exposure. Per the project's language convention (`goatcoin-rs/CONTENT_FILTER_GUIDELINES.md`),
 > this document describes **nodes and observable conditions, never actors and intents**, and every
 > adversarial condition is paired with the mechanism's response.
 >

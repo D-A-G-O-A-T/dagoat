@@ -1,7 +1,7 @@
 //! WorkBackend plugin plane — Task S5.
 //!
 //! This is the universal-Miner architecture law of GoatCoin Season 0 (design §3,
-//! `docs/superpowers/specs/2026-07-11-season0-fullsystem-design.md`): the Miner UI never talks
+//! the "Season-0 Full System — Design One-Pager (Miner + Wallet + Free-Market Mint)"): the Miner UI never talks
 //! to a device- or vendor-specific backend directly, only to this trait and the `catalog`
 //! module. A backend is a pluggable source of public-good work — Folding@home today, an NGO
 //! partner tomorrow — and the mint basis is always the beneficiary's own credit accounting,
@@ -70,6 +70,9 @@ pub enum PowerLevel {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UnitProgress {
     pub id: String,
+    /// Guaranteed-unique React row key within one snapshot: `id`, or `id#<index>`
+    /// when two parallel units' id fallbacks collide (same-project bug fix).
+    pub row_key: String,
     /// Short FAH work-unit number (UI label); full `id` stays for title/tooltip.
     pub number: Option<u64>,
     pub project: String,
@@ -81,6 +84,9 @@ pub struct UnitProgress {
     pub resource: String,
     /// FAH unit state token (`RUN`, `PAUSE`, …).
     pub state: String,
+    /// Raw FAH cause slug from `assignment.cause` (e.g. "cancer"), when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
 }
 
 /// Snapshot of a backend's current run state.
@@ -191,6 +197,11 @@ pub trait WorkBackend: Send + Sync {
     async fn dump_unit(&self, unit_id: &str) -> Result<(), String> {
         let _ = unit_id;
         Err("dump not supported for this backend".into())
+    }
+
+    /// Finish current work unit(s) then pause (FAH v8 `state: finish`). Default: unsupported.
+    async fn finish(&self) -> Result<(), String> {
+        Err("finish not supported for this backend".into())
     }
 
     async fn status(&self) -> BackendStatus;

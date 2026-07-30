@@ -1,22 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getAddress } from "viem";
 import { useContributeMode } from "../contributeMode.js";
+import AddWalletOverlay from "../components/AddWalletOverlay.jsx";
 import { useNetwork } from "../components/NetworkSwitch.jsx";
 import { getDeployment, isDeployed } from "../chain/addresses.js";
-import { KEY_IMPORT_WARNING, extractErrorName, getPublicClient, getWalletClient } from "../chain/client.js";
-import {
-  createWallet,
-  importWallet,
-  lock,
-  listWallets,
-  unlock,
-  useActiveAccount,
-  useActiveWallet,
-} from "../chain/wallet.js";
-import { createRustAccount } from "../chain/rustAccount.js";
-import { ensureEnrolled } from "../chain/enroll.js";
+import { extractErrorName, getPublicClient, getWalletClient } from "../chain/client.js";
+import { listWallets, unlock, useActiveAccount, useActiveWallet, useUnlockProgress } from "../chain/wallet.js";
 import { runTx } from "../chain/tx.js";
-import { rpcUnreachableHint } from "../chain/errors.js";
+import { commandError, rpcUnreachableHint } from "../chain/errors.js";
+import {
+  cleanCustomName, fullUsername, generatePasskey, GOAT_USERNAME_PREFIX,
+} from "../identity.js";
+import { bindWalletFahProfile, getWalletFahProfile } from "../walletProfiles.js";
+import { tryAutoEnroll } from "../chain/enroll.js";
+import { USERNAME_CAUTION } from "../onboarding/copy.js";
 import {
   GOAT_COIN_ABI,
   HOLDBACK_ESCROW_ABI,
@@ -26,20 +24,8 @@ import {
 import { FAH_CATALOG_LABEL, SEASON0_FAH_JOB_ID, WORK_UNIT_FORMULA } from "../chain/constants.js";
 import { formatGoat, formatUsdt, parseGoat, parseUsdt, shortHash, testnetAmount } from "../chain/format.js";
 import { isTestnetWithMockUsdt } from "../opsAccess.js";
-import {
-  cleanCustomName,
-  fullUsername,
-  GOAT_USERNAME_PREFIX,
-  saveUsername,
-} from "../components/FirstRunUsername.jsx";
 
 const POLL_MS = 10_000;
-const MIN_PASSWORD_LENGTH = 8;
-
-// The password unlocks the encrypted vault; it is never stored and can't be
-// recovered. If forgotten, the only way back in is the backed-up private key.
-const PASSWORD_WARNING =
-  "Your password can't be recovered. If you forget it, only your backed-up private key can restore this wallet — back it up now.";
 
 const MINT_BATCH_EVENT = WORK_MINTER_ABI.find((item) => item.type === "event" && item.name === "MintBatch");
 
@@ -56,44 +42,8 @@ function friendlyError(err, networkId) {
   return err?.shortMessage || err?.message || String(err);
 }
 
-// Tauri command rejections arrive as plain strings (Result<_, String>); normal
-// JS errors arrive as Error. Surface either without leaking anything else.
-function commandError(err) {
-  if (typeof err === "string") return err;
-  return err?.message || String(err);
-}
-
 const EMPTY_BALANCES = { liquid: 0n, holdback: 0n, usdt: 0n };
 const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "");
-
-/** After unlock/import: enrollSelf if needed (pays native ETH gas — anvil accounts have ETH). */
-async function tryAutoEnroll(networkId, address) {
-  if (!address) return { skipped: true };
-  const deployment = getDeployment(networkId);
-  if (!deployment?.enrollmentRegistry) return { skipped: true, reason: "no registry" };
-  let publicClient;
-  try {
-    publicClient = getPublicClient(networkId);
-  } catch {
-    return { skipped: true, reason: "no rpc" };
-  }
-  const account = createRustAccount(address);
-  const walletClient = getWalletClient(networkId, account);
-  if (!walletClient) return { skipped: true, reason: "no wallet client" };
-  try {
-    const out = await ensureEnrolled({
-      publicClient,
-      walletClient,
-      account,
-      enrollmentRegistry: deployment.enrollmentRegistry,
-    });
-    // ensureEnrolled may soft-skip (0 ETH) with { skipped, error } — do not throw
-    if (out?.skipped && out?.error) return { error: out.error, skipped: true };
-    return out;
-  } catch (err) {
-    return { error: commandError(err) };
-  }
-}
 
 export default function Wallet() {
   const { goatPilot } = useContributeMode();
@@ -291,7 +241,7 @@ export default function Wallet() {
   if (!deployed) {
     return (
       <section className="tab-panel">
-        <h2>Wallet</h2>
+        <h2 className="page-title">Wallet</h2>
         {!goatPilot && (
           <p className="mode-gate-note" role="status">
             You&apos;re in public-good-only mode. Switch to Public good + GOAT pilot to use wallet
@@ -309,7 +259,7 @@ export default function Wallet() {
 
   return (
     <section className="tab-panel wallet-tab">
-      <h2>Wallet</h2>
+      <h2 className="page-title">Wallet</h2>
 
       {!goatPilot && (
         <p className="mode-gate-note" role="status">
@@ -472,7 +422,8 @@ export default function Wallet() {
 
 // Password-protected multi-wallet manager. The private key never enters JS —
 // create/import/unlock/lock all round-trip through the Rust wallet_* commands
-// (see docs/superpowers/specs/2026-07-13-stronghold-wallet-design.md §3.3).
+// (see the "Password-Protected Multi-Wallet with Rust-Side Signing — Design"
+// spec, §3.3).
 function WalletManager() {
   const activeMeta = useActiveWallet();
   const { networkId } = useNetwork();
@@ -496,134 +447,118 @@ function WalletManager() {
     reloadList();
   }, [reloadList, activeMeta?.address]);
 
-  // ---- create --------------------------------------------------------------
-  const [createName, setCreateName] = useState("");
-  const [createPw, setCreatePw] = useState("");
-  const [createPw2, setCreatePw2] = useState("");
-  /** Custom part of GOAT- username (typebox); required before create. */
-  const [createGoatUser, setCreateGoatUser] = useState("");
-  const [createState, setCreateState] = useState({ status: "idle", message: "" });
-  /** When set, show confirm dialog before actually creating. */
-  const [createConfirmOpen, setCreateConfirmOpen] = useState(false);
-
-  function handleCreateSubmit(e) {
-    e.preventDefault();
-    const name = createName.trim();
-    if (!name) return setCreateState({ status: "error", message: "Enter a wallet name." });
-    if (createPw.length < MIN_PASSWORD_LENGTH)
-      return setCreateState({
-        status: "error",
-        message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
-      });
-    if (createPw !== createPw2)
-      return setCreateState({ status: "error", message: "Passwords do not match." });
-    if (!cleanCustomName(createGoatUser))
-      return setCreateState({
-        status: "error",
-        message: "Enter a GOAT username (letters, digits, underscore) — this wallet will bind to it.",
-      });
-    setCreateState({ status: "idle", message: "" });
-    setCreateConfirmOpen(true);
-  }
-
-  async function handleCreateConfirmed() {
-    const name = createName.trim();
-    const goatFull = fullUsername(createGoatUser);
-    setCreateConfirmOpen(false);
-    setCreateState({ status: "pending", message: "" });
-    try {
-      // Persist FAH/GOAT username first so Contribute + auto-bind use the same name.
-      await saveUsername(createGoatUser);
-      const meta = await createWallet(name, createPw);
-      await unlock(name, createPw);
-      const enroll = await tryAutoEnroll(networkId, meta.address);
-      setCreateName("");
-      setCreatePw("");
-      setCreatePw2("");
-      setCreateGoatUser("");
-      let msg = `Created and unlocked ${shortAddr(meta.address)}. FAH username ${goatFull} saved. Back up your key.`;
-      if (enroll?.already) msg += " Already enrolled.";
-      else if (enroll?.hash) msg += " Enrolled on-chain (self).";
-      else if (enroll?.error) msg += ` Enrollment skipped: ${enroll.error}`;
-      msg += " Open Contribute to Bind & enroll (gasless) under that GOAT- name.";
-      setCreateState({ status: "success", message: msg });
-      reloadList();
-    } catch (err) {
-      setCreateState({ status: "error", message: commandError(err) });
-    }
-  }
-
-  // ---- import --------------------------------------------------------------
-  const [importName, setImportName] = useState("");
-  const [importPw, setImportPw] = useState("");
-  const [importKey, setImportKey] = useState("");
-  const [importState, setImportState] = useState({ status: "idle", message: "" });
-
-  async function handleImport(e) {
-    e.preventDefault();
-    const name = importName.trim();
-    if (!name) return setImportState({ status: "error", message: "Enter a wallet name." });
-    if (importPw.length < MIN_PASSWORD_LENGTH)
-      return setImportState({ status: "error", message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
-    if (!importKey.trim()) return setImportState({ status: "error", message: "Enter a private key." });
-    setImportState({ status: "pending", message: "" });
-    try {
-      const meta = await importWallet(name, importPw, importKey.trim());
-      await unlock(name, importPw); // make the imported wallet the active signer
-      const enroll = await tryAutoEnroll(networkId, meta.address);
-      setImportName("");
-      setImportPw("");
-      setImportKey("");
-      let msg = `Imported and unlocked ${shortAddr(meta.address)}.`;
-      if (enroll?.already) msg += " Already enrolled.";
-      else if (enroll?.hash) msg += " Enrolled on-chain (self).";
-      else if (enroll?.error) msg += ` Enrollment skipped: ${enroll.error}`;
-      setImportState({ status: "success", message: msg });
-      reloadList();
-    } catch (err) {
-      setImportState({ status: "error", message: commandError(err) });
-    }
-  }
-
   // ---- unlock / switch -----------------------------------------------------
+  // unlockProgress is module-level (wallet.js): App unmounts this tab on switch,
+  // so local "Unlocking…" state would reset while wallet_unlock is still in flight.
+  const unlockProgress = useUnlockProgress();
   const [selectedName, setSelectedName] = useState("");
   const [unlockPw, setUnlockPw] = useState("");
-  const [unlockState, setUnlockState] = useState({ status: "idle", message: "" });
+  // Pre-submit validation only (pick wallet / empty password) — not used for pending.
+  const [unlockFormError, setUnlockFormError] = useState("");
 
-  // Default the dropdown to the first stored wallet once the list loads.
+  // T27 P8: dropdown always lists the currently active wallet first.
+  const orderedWallets = sortWalletsActiveFirst(wallets, activeMeta?.name);
+
+  // Default the dropdown to the first listed wallet (= active when one is unlocked).
   useEffect(() => {
-    if (!selectedName && wallets.length > 0) setSelectedName(wallets[0].name);
-  }, [wallets, selectedName]);
+    if (!selectedName && orderedWallets.length > 0) setSelectedName(orderedWallets[0].name);
+  }, [orderedWallets, selectedName]);
 
   async function handleUnlock(e) {
     e.preventDefault();
-    if (!selectedName) return setUnlockState({ status: "error", message: "Pick a wallet." });
-    if (!unlockPw) return setUnlockState({ status: "error", message: "Enter the wallet password." });
-    setUnlockState({ status: "pending", message: "" });
+    if (!selectedName) return setUnlockFormError("Pick a wallet.");
+    if (!unlockPw) return setUnlockFormError("Enter the wallet password.");
+    if (unlockProgress.status === "pending") return;
+    setUnlockFormError("");
     try {
-      const meta = await unlock(selectedName, unlockPw);
+      await unlock(selectedName, unlockPw);
       setUnlockPw("");
-      setUnlockState({ status: "success", message: `Unlocked ${shortAddr(meta.address)}.` });
-    } catch (err) {
-      // Non-leaky: Rust returns a typed "wrong password" style string.
-      setUnlockState({ status: "error", message: commandError(err) });
+    } catch {
+      // Error message lives on unlockProgress (survives remount); password stays for retry.
     }
   }
 
-  async function handleLock() {
-    try {
-      await lock();
-      setUnlockState({ status: "idle", message: "" });
-    } catch (err) {
-      setUnlockState({ status: "error", message: commandError(err) });
-    }
-  }
+  const unlockPending = unlockProgress.status === "pending";
+  const unlockMessage = unlockFormError || unlockProgress.message;
+  const unlockMessageIsError = Boolean(unlockFormError) || unlockProgress.status === "error";
 
   const hasWallets = wallets.length > 0;
 
+  // A1 (spec §16, amends D3): "Add another wallet" opens an overlay reusing the wizard's
+  // create/import steps. Visible whether or not a wallet is currently unlocked. Closing it
+  // (Cancel, Done, or a completed import) reloads the stored-wallet list so the new entry
+  // (and its now-active/unlocked state) appears immediately.
+  const [addWalletOpen, setAddWalletOpen] = useState(false);
+
+  // Missing FAH profile (e.g. Bob created before per-wallet usernames): one-time bind form.
+  const [fahProfile, setFahProfile] = useState(undefined); // undefined=loading, null=missing
+  const [bindUser, setBindUser] = useState("");
+  const [bindBusy, setBindBusy] = useState(false);
+  const [bindError, setBindError] = useState("");
+  const [bindOk, setBindOk] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setFahProfile(undefined);
+    setBindOk("");
+    setBindError("");
+    if (!activeMeta?.address) {
+      setFahProfile(null);
+      return undefined;
+    }
+    getWalletFahProfile(activeMeta.address).then((p) => {
+      if (!cancelled) setFahProfile(p);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMeta?.address]);
+
+  async function handleBindFahProfile(e) {
+    e.preventDefault();
+    if (!activeMeta?.address || bindBusy) return;
+    const username = fullUsername(bindUser);
+    if (!username) {
+      setBindError("Enter a GOAT username (letters, digits, _).");
+      return;
+    }
+    setBindBusy(true);
+    setBindError("");
+    setBindOk("");
+    try {
+      const pk = generatePasskey();
+      await bindWalletFahProfile(activeMeta.address, { username, passkey: pk });
+      await tryAutoEnroll(networkId, activeMeta.address);
+      setFahProfile({ username, passkey: pk });
+      setBindUser("");
+      setBindOk(`FAH profile set to ${username}. Bind & enroll continues under Contribute if needed.`);
+    } catch (err) {
+      setBindError(commandError(err));
+    } finally {
+      setBindBusy(false);
+    }
+  }
+
   return (
     <div className="wallet-section wallet-manager">
-      <h3>Wallets</h3>
+      <div className="wallet-section-header">
+        <h3>Wallets</h3>
+        <button type="button" onClick={() => setAddWalletOpen(true)}>
+          Add another wallet
+        </button>
+      </div>
+
+      {addWalletOpen && (
+        <AddWalletOverlay
+          onClose={() => {
+            setAddWalletOpen(false);
+            reloadList();
+            if (activeMeta?.address) {
+              getWalletFahProfile(activeMeta.address).then(setFahProfile);
+            }
+          }}
+        />
+      )}
 
       {activeMeta ? (
         <div className="wallet-actions-row">
@@ -634,13 +569,43 @@ function WalletManager() {
             <p>
               Wallet address: <code>{activeMeta.address}</code>
             </p>
+            {fahProfile?.username && (
+              <p>
+                GOAT username: <strong className="key-value">{fahProfile.username}</strong>
+              </p>
+            )}
+            <RevealKeyRow activeMeta={activeMeta} />
           </div>
-          <button type="button" onClick={handleLock}>
-            Lock
-          </button>
         </div>
       ) : (
-        <p className="muted">No wallet unlocked. Create, import, or unlock one below.</p>
+        <p className="muted">No wallet unlocked. Unlock a stored wallet, or create/import one from the setup wizard.</p>
+      )}
+
+      {activeMeta && fahProfile === null && (
+        <form className="wallet-form" onSubmit={handleBindFahProfile}>
+          <p className="warning-text">
+            This wallet has no GOAT username yet. Without one, FAH stays on another wallet&apos;s
+            profile and bind/enroll will fail. Choose a unique name for this wallet.
+          </p>
+          <label className="muted">GOAT username</label>
+          <div className="firstrun-input-row">
+            <span className="firstrun-prefix">{GOAT_USERNAME_PREFIX}</span>
+            <input
+              type="text"
+              placeholder="your name (letters, digits, _)"
+              value={bindUser}
+              onChange={(e) => setBindUser(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+          <p className="warning-text">{USERNAME_CAUTION}</p>
+          <button type="submit" disabled={bindBusy || !cleanCustomName(bindUser)}>
+            {bindBusy ? "Binding…" : "Set GOAT username for this wallet"}
+          </button>
+          {bindError && <p className="error-text">{bindError}</p>}
+          {bindOk && <p className="status-ok">{bindOk}</p>}
+        </form>
       )}
 
       {listError && <p className="placeholder-note">{listError}</p>}
@@ -655,7 +620,7 @@ function WalletManager() {
             value={selectedName}
             onChange={(e) => setSelectedName(e.target.value)}
           >
-            {wallets.map((w) => (
+            {orderedWallets.map((w) => (
               <option key={w.name} value={w.name}>
                 Name: {w.name} · Address: {shortAddr(w.address)}
               </option>
@@ -667,141 +632,77 @@ function WalletManager() {
             value={unlockPw}
             onChange={(e) => setUnlockPw(e.target.value)}
           />
-          <button type="submit" disabled={unlockState.status === "pending"}>
-            {unlockState.status === "pending" ? "Unlocking…" : "Unlock"}
+          <button type="submit" disabled={unlockPending}>
+            {unlockPending ? "Unlocking…" : "Unlock"}
           </button>
         </form>
       )}
-      {unlockState.message && (
-        <p className={unlockState.status === "error" ? "error-text" : "status-ok"}>{unlockState.message}</p>
+      {unlockMessage && (
+        <p className={unlockMessageIsError ? "error-text" : "status-ok"}>{unlockMessage}</p>
       )}
+    </div>
+  );
+}
 
-      <details className="wallet-add" open={!hasWallets}>
-        <summary>{hasWallets ? "Add another wallet" : "Create or import a wallet"}</summary>
+/** D1: the revealed key auto-remasks whenever the unlocked wallet goes away or changes. */
+export function shouldRemask(prevAddress, nextAddress) {
+  return Boolean(prevAddress) && prevAddress !== nextAddress;
+}
 
-        <p className="warning-text">{PASSWORD_WARNING}</p>
+/** T27 P8 (pure): the currently active wallet always lists first; the rest keep
+ *  their stored order. Unknown/absent active name = order unchanged. */
+export function sortWalletsActiveFirst(wallets, activeName) {
+  const list = Array.isArray(wallets) ? wallets : [];
+  if (!activeName) return list;
+  const idx = list.findIndex((w) => w?.name === activeName);
+  if (idx <= 0) return list;
+  return [list[idx], ...list.slice(0, idx), ...list.slice(idx + 1)];
+}
 
-        <div className="wallet-form-block">
-          <h4>Create wallet</h4>
-          <p className="muted">
-            Generates a fresh key in Rust and seals it in a password-encrypted Stronghold snapshot —
-            the key never leaves Rust and never enters this app&apos;s JavaScript.
-          </p>
-          <form className="wallet-form" onSubmit={handleCreateSubmit}>
-            <input
-              type="text"
-              placeholder="Wallet name (local label)"
-              value={createName}
-              onChange={(e) => setCreateName(e.target.value)}
-              autoComplete="off"
-            />
-            <label className="muted" htmlFor="create-goat-username" style={{ width: "100%" }}>
-              GOAT username (FAH / pilot bind) — required
-            </label>
-            <div className="firstrun-input-row" style={{ width: "100%" }}>
-              <span className="firstrun-prefix">{GOAT_USERNAME_PREFIX}</span>
-              <input
-                id="create-goat-username"
-                type="text"
-                placeholder="your name (letters, digits, _)"
-                value={createGoatUser}
-                onChange={(e) => setCreateGoatUser(e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </div>
-            <p className="muted firstrun-preview">
-              Will bind as <strong>{fullUsername(createGoatUser) || "GOAT-…"}</strong>
-            </p>
-            <input
-              type="password"
-              placeholder={`Password (min ${MIN_PASSWORD_LENGTH} chars)`}
-              value={createPw}
-              onChange={(e) => setCreatePw(e.target.value)}
-            />
-            <input
-              type="password"
-              placeholder="Confirm password"
-              value={createPw2}
-              onChange={(e) => setCreatePw2(e.target.value)}
-            />
-            <button type="submit" disabled={createState.status === "pending"}>
-              {createState.status === "pending" ? "Creating…" : "Create wallet"}
-            </button>
-          </form>
-          {createState.message && (
-            <p className={createState.status === "error" ? "error-text" : "status-ok"}>
-              {createState.message}
-            </p>
-          )}
-        </div>
+// Masked-by-default private-key reveal row. The key only ever exists in this
+// component's state, is never logged, and is cleared on re-mask / lock /
+// switch / unmount (see shouldRemask + the effects below) — D1 §11.
+function RevealKeyRow({ activeMeta }) {
+  const [revealed, setRevealed] = useState(null); // string | null
+  const [error, setError] = useState("");
+  const prevAddr = useRef(activeMeta?.address ?? null);
 
-        {createConfirmOpen && (
-          <div
-            className="firstrun-overlay"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="create-wallet-confirm-title"
-            onKeyDown={(e) => {
-              if (e.key === "Escape") setCreateConfirmOpen(false);
-            }}
-          >
-            <div className="firstrun-card">
-              <h2 id="create-wallet-confirm-title">Confirm create wallet</h2>
-              <p className="warning-text" role="alert">
-                This wallet will be used for pilot attribution under{" "}
-                <strong>{fullUsername(createGoatUser)}</strong>. On-chain bind is{" "}
-                <strong>set-once</strong>: the name cannot move to another wallet later. Do not use
-                the relayer / anvil gas key as a worker wallet.
-              </p>
-              <p className="muted">
-                Local label: <strong>{createName.trim() || "—"}</strong>
-                <br />
-                FAH / GOAT username: <strong>{fullUsername(createGoatUser)}</strong>
-              </p>
-              <div className="firstrun-actions">
-                <button type="button" onClick={handleCreateConfirmed}>
-                  Confirm &amp; create
-                </button>
-                <button type="button" className="link-button" onClick={() => setCreateConfirmOpen(false)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+  useEffect(() => {
+    if (shouldRemask(prevAddr.current, activeMeta?.address ?? null)) {
+      setRevealed(null);
+      setError("");
+    }
+    prevAddr.current = activeMeta?.address ?? null;
+  }, [activeMeta?.address]);
 
-        <div className="wallet-form-block">
-          <h4>Import key</h4>
-          <p className="warning-text">{KEY_IMPORT_WARNING}</p>
-          <form className="wallet-form" onSubmit={handleImport}>
-            <input
-              type="text"
-              placeholder="Wallet name"
-              value={importName}
-              onChange={(e) => setImportName(e.target.value)}
-            />
-            <input
-              type="password"
-              placeholder={`Password (min ${MIN_PASSWORD_LENGTH} chars)`}
-              value={importPw}
-              onChange={(e) => setImportPw(e.target.value)}
-            />
-            <input
-              type="password"
-              placeholder="0x… testnet private key"
-              value={importKey}
-              onChange={(e) => setImportKey(e.target.value)}
-            />
-            <button type="submit" disabled={importState.status === "pending"}>
-              {importState.status === "pending" ? "Importing…" : "Import key"}
-            </button>
-          </form>
-          {importState.message && (
-            <p className={importState.status === "error" ? "error-text" : "status-ok"}>{importState.message}</p>
-          )}
-        </div>
-      </details>
+  useEffect(() => () => setRevealed(null), []); // unmount (tab change) remasks
+
+  async function toggle() {
+    if (revealed) {
+      setRevealed(null);
+      return;
+    }
+    try {
+      const key = await invoke("wallet_reveal_key", { expectedAddress: activeMeta.address });
+      setRevealed(key);
+      setError("");
+    } catch (err) {
+      setError(String(err?.message ?? err)); // stays masked on failure (spec §11)
+    }
+  }
+
+  return (
+    <div className="reveal-key-row">
+      <span className="muted">Private key:</span>
+      <button
+        type="button"
+        className="reveal-key-row__value"
+        onClick={toggle}
+        title={revealed ? "Click to hide" : "Click to reveal"}
+      >
+        {revealed ? <code>{revealed}</code> : <span aria-label="hidden">••••••••••</span>}
+      </button>
+      {error && <span className="error-text">{error}</span>}
     </div>
   );
 }

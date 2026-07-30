@@ -1,5 +1,6 @@
 //! Parity integration tests (WP-0.5): re-express the Python reference's key behaviors and
-//! the AI-response-16 amendments in Rust. Proves the port matches the reference oracle.
+//! the Phase 3 specification amendments (catalogued under "Amendments applied" in this
+//! workspace's README) in Rust. Proves the port matches the reference oracle.
 
 use std::collections::HashMap;
 

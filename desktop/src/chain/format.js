@@ -1,6 +1,6 @@
 // Amount formatting/parsing shared by the Wallet (and later Ops/Miner)
-// tabs. GOAT is 18dp, MockUSDT is 6dp (Global Constraints,
-// docs/superpowers/plans/2026-07-11-season0-fullsystem.md). Kept dependency-
+// tabs. GOAT is 18dp, MockUSDT is 6dp (Global Constraints, the "Season-0 Full
+// System Implementation Plan (Miner + Wallet + Free-Market Mint)"). Kept dependency-
 // free of any component so it's unit-testable on its own.
 import { formatUnits, parseUnits } from "viem";
 

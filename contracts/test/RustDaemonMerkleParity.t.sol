@@ -56,6 +56,10 @@ contract RustDaemonMerkleParityTest is Test {
         goat = new GoatCoin("GoatCoin", "GOAT", safe, reg);
         escrow = new HoldbackEscrow(safe, goat, reserve);
         binding = new WorkerBinding();
+        // Resolver live from construction (see DeployEpochSettlement): predict the
+        // settlement's CREATE address so the mutually-immutable pair can be wired at deploy.
+        address predictedSettle = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        resolver = new FounderResolver(founder, predictedSettle);
         settle = new EpochSettlement(
             safe,
             goat,
@@ -69,10 +73,10 @@ contract RustDaemonMerkleParityTest is Test {
             WINDOW,
             PBOND,
             CBOND,
-            address(0),
+            address(resolver),
             watcher
         );
-        resolver = new FounderResolver(founder, address(settle));
+        assertEq(address(settle), predictedSettle, "CREATE address prediction drifted");
         vm.startPrank(safe);
         escrow.setVault(address(settle));
         goat.setMinter(address(settle), true);

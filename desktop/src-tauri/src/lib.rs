@@ -2,7 +2,8 @@
 //!
 //! Season 0 scope (Task S4, desktop bootstrap): this is the desktop **shell** only. The `goatd`
 //! mesh-node sidecar is out of scope for Season 0 — see `ARCHITECTURE_CONVERGENCE.md` and
-//! `docs/superpowers/plans/2026-07-11-season0-fullsystem.md` — so the old node start/stop/power
+//! the "Season-0 Full System Implementation Plan (Miner + Wallet + Free-Market Mint)"
+//! — so the old node start/stop/power
 //! commands (which spawned `goatd` as an external-bin sidecar) are removed along with the
 //! `externalBin` entry in `tauri.conf.json`.
 //!
@@ -70,6 +71,11 @@ async fn backend_stop(registry: tauri::State<'_, Registry>, id: String) -> Resul
 #[tauri::command]
 async fn backend_pause(registry: tauri::State<'_, Registry>, id: String) -> Result<(), String> {
     registry.get(&id)?.pause().await
+}
+
+#[tauri::command]
+async fn backend_finish(registry: tauri::State<'_, Registry>, id: String) -> Result<(), String> {
+    registry.get(&id)?.finish().await
 }
 
 /// Dump (discard) a stuck FAH work unit by id — same recovery as Web Control dump.
@@ -146,12 +152,14 @@ async fn backend_ensure_engine(
 /// Real FAH 3D viz data (viewerTop + latest viewerFrame) from the managed engine work/ tree.
 /// Same on-disk frames FAH Web Control visualizes — not a decorative mesh.
 #[tauri::command]
-fn backend_fah_viz() -> Result<Option<FahVizSnapshot>, String> {
-    workbackend::fah::load_fah_viz_snapshot()
+fn backend_fah_viz(unit_id: Option<String>) -> Result<Option<FahVizSnapshot>, String> {
+    workbackend::fah::load_fah_viz_snapshot(unit_id.as_deref())
 }
 
 /// FAH identity snapshot for the UI: username presence (first-run gate), effective team,
-/// passkey_set / passkey_is_default (legacy brand). Never returns the passkey value.
+/// passkey_set / passkey_is_default (legacy brand). Returns the passkey value read-only
+/// (founder amendment A2, spec §16 — not confidential; not editable in-app to protect bonus
+/// continuity).
 #[tauri::command]
 fn backend_fah_identity() -> workbackend::fah::FahIdentity {
     workbackend::fah::load_fah_identity()
@@ -194,12 +202,7 @@ fn install_crash_log() {
         } else {
             "non-string panic payload".into()
         };
-        let line = format!(
-            "[{}] PANIC at {}: {}\n",
-            chrono_like_now(),
-            loc,
-            msg
-        );
+        let line = format!("[{}] PANIC at {}: {}\n", chrono_like_now(), loc, msg);
         let _ = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -252,6 +255,9 @@ fn start_heartbeat_log() {
     });
 }
 
+static FAH_SHUTDOWN_HANDLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_crash_log();
@@ -259,6 +265,7 @@ pub fn run() {
     start_heartbeat_log();
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_opener::init())
         // Stronghold is used directly from Rust (see wallet.rs) — no JS-facing
         // stronghold plugin is registered, so nothing is a decoy.
         .manage(workbackend::build_registry())
@@ -275,6 +282,7 @@ pub fn run() {
             wallet::wallet_sign_transaction,
             wallet::wallet_sign_message,
             wallet::wallet_sign_typed_data,
+            wallet::wallet_reveal_key,
             catalog_list,
             backend_detect,
             backend_supports_managed,
@@ -283,6 +291,7 @@ pub fn run() {
             backend_start,
             backend_stop,
             backend_pause,
+            backend_finish,
             backend_dump_unit,
             backend_status,
             backend_completions,
@@ -309,6 +318,15 @@ pub fn run() {
                 }
                 tauri::RunEvent::Exit => {
                     append_app_log("exit.log", "Exit (process shutting down)");
+                    if !FAH_SHUTDOWN_HANDLED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        // FIX-B: the graceful window is a fah.rs constant (~2s) — the windowless
+                        // fah-client ignores WM_CLOSE, so a long window only delayed every exit.
+                        let outcome = workbackend::fah::graceful_then_kill_fah_client();
+                        append_app_log(
+                            "exit.log",
+                            &format!("B9 graceful-then-kill outcome: {outcome:?}"),
+                        );
+                    }
                 }
                 tauri::RunEvent::WindowEvent { label, event, .. } => {
                     if let tauri::WindowEvent::CloseRequested { .. } = event {

@@ -1,101 +1,87 @@
-﻿# Build
-/target/
-goatcoin-rs/target/
-**/target/
-desktop/src-tauri/target/
-dist/
-build/
-*.exe
-*.pdb
-*.dll
-*.so
-*.dylib
-*.o
-*.a
-*.rlib
-*.rmeta
+# .gitignore -- GoatCoin
+#
+# Build output and local runtime state only. Every rule below names something a
+# clone PRODUCES by building or running this repository. Nothing here names a
+# file anyone is expected to author, and nothing here is a substitute for not
+# committing a file in the first place.
+#
+# Scoped rules live next to what they cover and remain the authority there:
+#
+#   contracts/.gitignore            Foundry out/, cache/, broadcast/, and the
+#                                   per-run scratch deploy directories
+#   desktop/.gitignore              node_modules/, Vite dist/, dist-release/,
+#                                   Tauri src-tauri/target and gen/schemas
+#   tools/goat-attestor/.gitignore  daemon state/, evidence/, registry.json,
+#                                   relayer logs, gate logs
+#
+# The rules here are the repo-wide floor, so a crate or package added tomorrow
+# is covered on the day it is added rather than the day someone remembers.
 
-# Python
+# -- Rust / Cargo -------------------------------------------------------------
+# No leading slash: this matches target/ at every depth, which is what the
+# workspace root, goatcoin-rs/, tools/goat-attestor/ and desktop/src-tauri/ all
+# need. Cargo.lock is committed on purpose (this repo ships binaries) and is
+# deliberately NOT ignored.
+target/
+**/*.rs.bk
+
+# -- Node / JavaScript --------------------------------------------------------
+node_modules/
+dist/
+dist-release/
+build/
+
+# -- Foundry ------------------------------------------------------------------
+out/
+cache/
+broadcast/
+# Per-test epoch manifests. `forge test` runs a contract's test functions
+# concurrently, so DeployEpochSettlement gives each test its own file rather
+# than racing on the committed deployments/<chainid>.epoch.json -- vm.writeJson
+# truncates before it writes. See contracts/test/DeployEpochSettlement.t.sol.
+contracts/deployments/*.epoch.t-*.json
+
+# -- Python -------------------------------------------------------------------
 __pycache__/
 *.py[cod]
+*.egg-info/
 .venv/
 venv/
 
-# Secrets
+# -- Local dev-chain and launcher state ---------------------------------------
+# Written by desktop/GOAT-START.bat and desktop/start-app.ps1 when you run the
+# local anvil chain and the Vite dev server.
+desktop/.run-logs/
+desktop/.anvil-state.json
+# Written by the goat-net stats collector
+# (goatcoin-rs/crates/goat-net/src/bin/collect.rs).
+livestats.json
+
+# -- Secrets and local environment (never commit) -----------------------------
 .env
 .env.*
 !.env.example
 keys/
-**/node_secret
-**/*_secret
-**/*.pem
-**/*.key
 secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
 
-# IDE / OS / agent local
+# -- Logs, scratch, merge leftovers -------------------------------------------
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# -- Editor and OS detritus ---------------------------------------------------
 .idea/
 .vscode/
 *.swp
 *~
 .DS_Store
 Thumbs.db
-.claude/
-
-# Logs
-*.log
-livestats.json
-*.tmp
-*.bak
-
-# Internal AI session dumps (never ship)
-AI respond/
-
-# Internal strategy / BD war room — never publish
-Council/
-
-
-# Internal eng notes — keep private (not product surface)
-RECON-05mitigation.md
-SECURITY_QUICKFIXES.md
-POST_MVP_ROADMAP.md
-goatd-Cargo.toml.reference
-Critical Concern*.md
-GoatCoin_Memory.md
-GoatCoin_Project_Handover.md
-GPUCoin_Prompts.md
-FIRST_PROMPT_TO_USE.md
-05_Prompt_Pack.md
-09_Original_Prompts_Reference.md
-
-# More internal-only docs
-PUBLISH_CHECKLIST.md
-**/CONTENT_FILTER_GUIDELINES.md
-**/ACCESSIBILITY.md
-
-# Guidance-pack / strategy docs (live in private working tree only)
-01_Vision_Golden_Goal.md
-02_Core_Principles.md
-03_Architecture_Guidelines.md
-04_Anti_Monopolization_Strategy.md
-05_Prompt_Pack.md
-06_Project_Structure.md
-07_Tokenomics_Framework.md
-08_Roadmap.md
-START_HERE.md
-DOC_INDEX.md
-09_Original_Prompts_Reference.md
-CLAUDE.md
-
-# local auth noise
-_gh_*.txt
-
-# Imported trees: build outputs & local runtime state (2026-07-17 import)
-node_modules/
-contracts/broadcast/
-contracts/cache/
-contracts/out/
-state/
-evidence/
-registry.json
-relayer-*.txt
-*.env
+Desktop.ini

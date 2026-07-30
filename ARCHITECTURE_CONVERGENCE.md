@@ -1,7 +1,7 @@
 # ARCHITECTURE_CONVERGENCE.md — One production spine (P1)
 
-**Date:** 2026-07-08 · **Track:** B (P1) · **Owner:** Project
-**Predecessor:** AR88 · **Companions:** `RUNTIME_VS_SPEC.md` (P6), README.md, `ARCHITECTURE.md`
+**Date:** 2026-07-08 · **Track:** B (P1) · **Owner:** Lead Architect
+**Predecessor:** AR88 · **Companions:** `RUNTIME_VS_SPEC.md` (P6), `DOC_INDEX.md`, `ARCHITECTURE.md`
 
 **Problem (P1).** The repository contains **two Rust trees** that both look like "the product":
 - `src/` + `src/bin/goatd.rs` — the sealed `#![no_std]` core + the only async daemon (the tree Docker
@@ -131,7 +131,7 @@ real-crypto path may remain unused. One spine, one crypto path.
 ## 4. Phase-0 — what is safe to do now, and the PR plan for the rest
 
 **Implemented this turn (low-risk, doc-only — "stop looking like two products"):**
-- **P0-0 (done).** This document + `RUNTIME_VS_SPEC.md` + README.md establish the single spine,
+- **P0-0 (done).** This document + `RUNTIME_VS_SPEC.md` + `DOC_INDEX.md` establish the single spine,
   the honesty matrix, and the doc hierarchy. `goatcoin-rs/README.md` gets an orientation banner
   pointing here (it is the oracle, not a second product).
 

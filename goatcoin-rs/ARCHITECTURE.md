@@ -84,7 +84,7 @@ the same verdict from the same published data. Nobody is trusted; correctness is
 ## The layers above MVP-1 (not yet built)
 
 Distributed orchestrator + PQ P2P (MVP-2), density probe + live class maturity + Sybil
-adversary (MVP-3). See the Testnet MVP work packages (design note 18) and MVP scope (17).
+adversary (MVP-3).
 
 ## Build & gates
 

@@ -1,85 +1,83 @@
-# D.A. G.O.A.T. (GoatCoin)
+# D.A. G.O.A.T. (GoatCoin / GPUCoin)
 
 **D.A. G.O.A.T.** — *Decentralized Architecture, Global Orchestration & Aligned Technology*
 
-The software is the **D.A. G.O.A.T. Engine** — the post-quantum verification-mesh runtime (the
-`goatd` daemon). Nodes form a PQ-authenticated gossip network, verify capability records, and
-(Phase-0) run an out-of-process worker harness.
+Aligning the world’s idle compute toward **real, useful public-good work**.  
+**Token (design):** GoatCoin (GOAT) · **Alias:** GPUCoin
 
-**License:** [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)
-
-> **Honesty.** This is **not** a live token marketplace, rewards network, or production sandbox.
-> Crypto on the wire is real (ML-DSA-65 / ML-KEM-768 / AES-256-GCM) via pre-1.0, unaudited crates.
-> See [`RUNTIME_VS_SPEC.md`](RUNTIME_VS_SPEC.md) for shipped vs designed capabilities.
+> **Runtime reality (read first).** What runs today is an *experimental post-quantum verification mesh*
+> with **real but pre-1.0, not-yet-audited** PQ crypto and **Phase-0**-only execution isolation —
+> and **no** live token, rewards, or marketplace.  
+> Exact matrix: [`RUNTIME_VS_SPEC.md`](RUNTIME_VS_SPEC.md) · Spine: [`ARCHITECTURE_CONVERGENCE.md`](ARCHITECTURE_CONVERGENCE.md).  
+> Do not present vision language as shipped product.
 
 ---
 
-## Build & test
+## Quick start
+
+1. **`RUNTIME_VS_SPEC.md`** — honesty matrix  
+2. **`DEPLOY.md`** / **`ALPHA_PILOT.md`** — run the mesh
 
 ```bash
 cargo test
 cargo build --release --bin goatd
-cargo build --release --bin goat-worker
-cargo build --release --bin goat-keygen
+# docker compose up --build   # local multi-node lab
 ```
-
-Requires a recent stable Rust toolchain.
 
 ---
 
-## Run a local multi-node lab
+## Design pack (v2.1-aligned)
 
-```bash
-cp .env.example .env          # optional: set GOATD_CPU_LIMIT
-docker compose up --build
-```
-
-- Five nodes on UDP ports `4640`–`4644` (host) → `4646` inside containers  
-- Power dial: `GOATD_CPU_LIMIT` in `.env` (Docker cgroups CPU quota)  
-- Lab identities are **forgeable by design** unless you set unique `GOATD_SIGNING_SEED`s  
-
-Operator walkthrough: **[`ALPHA_PILOT.md`](ALPHA_PILOT.md)**  
-Deploy checklist: **[`DEPLOY.md`](DEPLOY.md)** · Key migration: **[`MIGRATION.md`](MIGRATION.md)**
+| Doc | Topic |
+|-----|--------|
+| `01_Vision_Golden_Goal.md` | Commons vision / Golden Goal |
+| `02_Core_Principles.md` | Invariants (No-Ponzi, PoVW, honesty, PQ) |
+| `03_Architecture_Guidelines.md` | Target layers vs deploy spine |
+| `04_Anti_Monopolization_Strategy.md` | Anti-farm design intent |
+| `06_Project_Structure.md` | Actual repo map |
+| `07_Tokenomics_Framework.md` | Funded Public Good / No-Ponzi |
+| `08_Roadmap.md` | Mesh → pilot → economy → research |
 
 ---
 
-## Repository layout
+## Repository layout (short)
 
 | Path | Role |
 |------|------|
-| `src/` | **D.A. G.O.A.T. Engine** deploy spine — `goatd` / crypto / isolation binaries |
-| `goatcoin-rs/` | Mechanism workspace (protocol, ledger, net experiments) |
-| `reference/` | Python reference implementations & tests |
-| `desktop/` | Early desktop shell (optional, incomplete product) |
-| `genesis.json` | Lab genesis (public keys only; forgeable testnet IDs labeled) |
-| `RUNTIME_VS_SPEC.md` | **Canonical** shipped-vs-designed matrix |
-| `ARCHITECTURE.md` | Node crate architecture |
-| `ARCHITECTURE_CONVERGENCE.md` | Deploy spine vs `goatcoin-rs` ownership |
-| `GoatCoin_Yellowpaper.md` | Protocol specification (engineering — not a token offering) |
-| `GoatCoin_Threat_Model.md` | Threat / RECON register |
-| `GoatHAL_*.md` | Phase-0 isolation design & threats |
+| `src/` + `goatd` | Deploy spine |
+| `goatcoin-rs/` | Mechanism / verification workspace |
+| `reference/` | Python reference |
+| `RUNTIME_VS_SPEC.md` | Shipped vs designed |
 
 ---
 
-## Direction (not shipped)
+## Invariants (soul)
 
-Long-term intent: align idle machines toward **verifiable public-good batch compute**, with
-economics that never pay out more than real external inflow (**No-Ponzi**). That product path is
-**design**, not current runtime. Code truth always wins: `RUNTIME_VS_SPEC.md`.
+1. **No-Ponzi** — monetary reward ≤ real external inflow  
+2. **Proof-of-Valued-Work** — correct *and* wanted (m-of-n usefulness)  
+3. **Device-agnostic / anti-monopolization**  
+4. **Post-quantum only**  
+5. **Radical honesty** — claims ≤ code  
+6. **Humane engagement** — no exploitation / no player→player cash gambling  
 
----
-
-## Security notes for operators
-
-- Do **not** expose a lab node with deterministic testnet seeds on a public bind.  
-- Prefer `GOATD_SIGNING_SEED` (64 hex) per node for any off-host use.  
-- Phase-0 isolation is cooperative process separation — **not** a multi-tenant production sandbox.  
-- Report security issues responsibly; this software is experimental.
+Detail: `02_Core_Principles.md`.
 
 ---
 
-## Contributing
+## Licence
 
-1. Read `RUNTIME_VS_SPEC.md` before changing capability claims in docs.  
-2. `cargo fmt` / `cargo clippy` / `cargo test` on the root package.  
-3. Keep fail-closed behavior for identity, genesis, and isolation gates.
+Dual-licensed, at your option, under either:
+
+- **MIT** - [`LICENSE-MIT`](LICENSE-MIT)
+- **Apache License 2.0** - [`LICENSE-APACHE`](LICENSE-APACHE)
+
+SPDX identifier: `MIT OR Apache-2.0`, which is what every crate manifest in this
+repository declares.
+
+Copyright (c) 2026 D.A. G.O.A.T. / DaGoat Engine / DaGoat Network / GoatCoin contributors.
+
+Unless you state otherwise, any contribution you intentionally submit for
+inclusion in this work is dual-licensed as above, with no additional terms.
+
+Third-party code vendored under `contracts/lib/` keeps its own licence; those
+files are not covered by the two licences above.

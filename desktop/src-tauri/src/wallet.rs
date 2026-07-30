@@ -1,12 +1,12 @@
 //! Password-protected multi-wallet with **Rust-side** Ethereum signing.
 //!
-//! Design: `docs/superpowers/specs/2026-07-13-stronghold-wallet-design.md`.
+//! Design: the "Password-Protected Multi-Wallet with Rust-Side Signing — Design" spec.
 //!
 //! ## The one invariant
-//! The secp256k1 private key **NEVER** crosses the IPC bridge into JS. It exists
-//! only as (a) an encrypted-at-rest record inside a Stronghold snapshot on disk
-//! and (b) a transient, zeroized buffer inside a `PrivateKeySigner` in *this*
-//! process while an unlock/sign is in flight. Every command returns only
+//! The secp256k1 private key crosses the IPC bridge **only** via `wallet_reveal_key`
+//! (founder-approved amendment, the "GoatAPP UI Reconstruction — Phase 1:
+//! Onboarding, Shell, Contribute — Design" spec, §9.1): explicit user action,
+//! unlocked wallet only, never logged. Every other command returns only
 //! addresses and signatures.
 //!
 //! ## At-rest protection (spec §4 / §9)
@@ -119,7 +119,9 @@ fn index_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 fn load_index(app: &tauri::AppHandle) -> Result<WalletIndex, String> {
     let path = index_path(app)?;
     match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "wallet index is corrupt".to_string()),
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|_| "wallet index is corrupt".to_string())
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(WalletIndex {
             version: 1,
             wallets: BTreeMap::new(),
@@ -130,7 +132,8 @@ fn load_index(app: &tauri::AppHandle) -> Result<WalletIndex, String> {
 
 fn save_index(app: &tauri::AppHandle, index: &WalletIndex) -> Result<(), String> {
     let path = index_path(app)?;
-    let bytes = serde_json::to_vec_pretty(index).map_err(|_| "could not serialize wallet index".to_string())?;
+    let bytes = serde_json::to_vec_pretty(index)
+        .map_err(|_| "could not serialize wallet index".to_string())?;
     std::fs::write(&path, bytes).map_err(|_| "could not write wallet index".to_string())
 }
 
@@ -166,7 +169,11 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], String> {
 /// Write `key_bytes` (the 32-byte secp256k1 private key) into a **new** Stronghold
 /// snapshot at `path`, encrypted under `snapshot_key`. AppHandle-free so it is
 /// unit-testable. The caller still owns / must zeroize `key_bytes`.
-fn store_key_in_snapshot(path: &Path, snapshot_key: &[u8; KEY_LEN], key_bytes: &[u8]) -> Result<(), String> {
+fn store_key_in_snapshot(
+    path: &Path,
+    snapshot_key: &[u8; KEY_LEN],
+    key_bytes: &[u8],
+) -> Result<(), String> {
     let stronghold = Stronghold::default();
     let keyprovider = KeyProvider::try_from(Zeroizing::new(snapshot_key.to_vec()))
         .map_err(|_| "could not initialize vault key".to_string())?;
@@ -219,7 +226,8 @@ fn read_key_from_snapshot(path: &Path, snapshot_key: &[u8; KEY_LEN]) -> Result<V
 /// Build a signer from raw key bytes, then zeroize the caller's buffer copy.
 /// The signer owns a `k256::SigningKey` that zeroizes on drop.
 fn signer_from_bytes(key_bytes: &mut Vec<u8>) -> Result<PrivateKeySigner, String> {
-    let signer = PrivateKeySigner::from_slice(key_bytes).map_err(|_| "invalid private key".to_string());
+    let signer =
+        PrivateKeySigner::from_slice(key_bytes).map_err(|_| "invalid private key".to_string());
     key_bytes.zeroize();
     signer
 }
@@ -283,8 +291,11 @@ fn field<'a>(obj: &'a serde_json::Map<String, Value>, keys: &[&str]) -> Option<&
 }
 
 fn build_tx(tx_json: &str) -> Result<TxEip1559, String> {
-    let root: Value = serde_json::from_str(tx_json).map_err(|_| "invalid transaction json".to_string())?;
-    let obj = root.as_object().ok_or_else(|| "transaction json must be an object".to_string())?;
+    let root: Value =
+        serde_json::from_str(tx_json).map_err(|_| "invalid transaction json".to_string())?;
+    let obj = root
+        .as_object()
+        .ok_or_else(|| "transaction json must be an object".to_string())?;
 
     let chain_id_v = field(obj, &["chainId", "chain_id"]);
     if chain_id_v.is_none() || matches!(chain_id_v, Some(Value::Null)) {
@@ -295,16 +306,18 @@ fn build_tx(tx_json: &str) -> Result<TxEip1559, String> {
     let nonce = parse_u64(field(obj, &["nonce"]))?;
     let gas_limit = parse_u64(field(obj, &["gas", "gasLimit", "gas_limit"]))?;
     let max_fee_per_gas = parse_u128(field(obj, &["maxFeePerGas", "max_fee_per_gas"]))?;
-    let max_priority_fee_per_gas =
-        parse_u128(field(obj, &["maxPriorityFeePerGas", "max_priority_fee_per_gas"]))?;
+    let max_priority_fee_per_gas = parse_u128(field(
+        obj,
+        &["maxPriorityFeePerGas", "max_priority_fee_per_gas"],
+    ))?;
     let value = parse_u256(field(obj, &["value"]))?;
 
     let to = match field(obj, &["to"]) {
         None | Some(Value::Null) => TxKind::Create,
         Some(Value::String(s)) if s.is_empty() => TxKind::Create,
-        Some(Value::String(s)) => {
-            TxKind::Call(Address::from_str(s.trim()).map_err(|_| "invalid `to` address".to_string())?)
-        }
+        Some(Value::String(s)) => TxKind::Call(
+            Address::from_str(s.trim()).map_err(|_| "invalid `to` address".to_string())?,
+        ),
         _ => return Err("invalid `to` field".to_string()),
     };
 
@@ -312,7 +325,10 @@ fn build_tx(tx_json: &str) -> Result<TxEip1559, String> {
         None | Some(Value::Null) => Bytes::new(),
         Some(Value::String(s)) => {
             let s = s.trim();
-            let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+            let s = s
+                .strip_prefix("0x")
+                .or_else(|| s.strip_prefix("0X"))
+                .unwrap_or(s);
             if s.is_empty() {
                 Bytes::new()
             } else {
@@ -324,7 +340,9 @@ fn build_tx(tx_json: &str) -> Result<TxEip1559, String> {
 
     let access_list: AccessList = match field(obj, &["accessList", "access_list"]) {
         None | Some(Value::Null) => AccessList::default(),
-        Some(v) => serde_json::from_value(v.clone()).map_err(|_| "invalid accessList".to_string())?,
+        Some(v) => {
+            serde_json::from_value(v.clone()).map_err(|_| "invalid accessList".to_string())?
+        }
     };
 
     Ok(TxEip1559 {
@@ -343,12 +361,18 @@ fn build_tx(tx_json: &str) -> Result<TxEip1559, String> {
 /// Clone the active signer out from under the lock so we never hold a
 /// `MutexGuard` across an `.await` (the guard is not `Send`).
 fn active_signer(state: &WalletState) -> Result<PrivateKeySigner, String> {
-    let active = state.active.lock().map_err(|_| "wallet state poisoned".to_string())?;
+    let active = state
+        .active
+        .lock()
+        .map_err(|_| "wallet state poisoned".to_string())?;
     let name = active
         .as_ref()
         .map(|m| m.name.clone())
         .ok_or_else(|| "no wallet is unlocked".to_string())?;
-    let sessions = state.sessions.lock().map_err(|_| "wallet state poisoned".to_string())?;
+    let sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "wallet state poisoned".to_string())?;
     sessions
         .get(&name)
         .cloned()
@@ -373,6 +397,27 @@ fn active_signer_checked(state: &WalletState, expected: &str) -> Result<PrivateK
     let signer = active_signer(state)?;
     ensure_expected(&signer, expected)?;
     Ok(signer)
+}
+
+/// D1 / the "GoatAPP UI Reconstruction — Phase 1: Onboarding, Shell, Contribute — Design"
+/// spec, §9.1 — deliberate invariant amendment: the private key
+/// may cross the IPC bridge ONLY through `wallet_reveal_key`, on explicit user
+/// action (creation reveal / masked-row click), ONLY while the wallet is unlocked.
+/// It is never logged and never persisted on the JS side.
+pub(crate) fn reveal_key_for(
+    state: &WalletState,
+    expected_address: &str,
+) -> Result<String, String> {
+    let signer = active_signer_checked(state, expected_address)?;
+    Ok(format!("0x{}", hex::encode(signer.to_bytes())))
+}
+
+#[tauri::command]
+pub async fn wallet_reveal_key(
+    state: tauri::State<'_, WalletState>,
+    expected_address: String,
+) -> Result<String, String> {
+    reveal_key_for(&state, &expected_address)
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +502,8 @@ pub async fn wallet_import(
         .strip_prefix("0x")
         .or_else(|| hex_str.strip_prefix("0X"))
         .unwrap_or(hex_str);
-    let mut key_bytes = hex::decode(hex_str).map_err(|_| "private key is not valid hex".to_string())?;
+    let mut key_bytes =
+        hex::decode(hex_str).map_err(|_| "private key is not valid hex".to_string())?;
     if key_bytes.len() != KEY_LEN {
         key_bytes.zeroize();
         return Err("private key must be 32 bytes".to_string());
@@ -524,8 +570,7 @@ pub async fn wallet_unlock(
             open_wallet_signer(&name_for_task, &password, &entry, &snapshot_path)
         }))
         .map_err(|_| {
-            "wallet unlock failed (vault error). Wrong password, or re-import the key."
-                .to_string()
+            "wallet unlock failed (vault error). Wrong password, or re-import the key.".to_string()
         })?
     })
     .await
@@ -576,19 +621,30 @@ fn open_wallet_signer(
 #[tauri::command]
 pub async fn wallet_lock(state: tauri::State<'_, WalletState>) -> Result<(), String> {
     {
-        let mut sessions = state.sessions.lock().map_err(|_| "wallet state poisoned".to_string())?;
+        let mut sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "wallet state poisoned".to_string())?;
         sessions.clear(); // signers drop here; k256 keys zeroize on drop
     }
     {
-        let mut active = state.active.lock().map_err(|_| "wallet state poisoned".to_string())?;
+        let mut active = state
+            .active
+            .lock()
+            .map_err(|_| "wallet state poisoned".to_string())?;
         *active = None;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn wallet_active(state: tauri::State<'_, WalletState>) -> Result<Option<WalletMeta>, String> {
-    let active = state.active.lock().map_err(|_| "wallet state poisoned".to_string())?;
+pub async fn wallet_active(
+    state: tauri::State<'_, WalletState>,
+) -> Result<Option<WalletMeta>, String> {
+    let active = state
+        .active
+        .lock()
+        .map_err(|_| "wallet state poisoned".to_string())?;
     Ok(active.clone())
 }
 
@@ -622,11 +678,17 @@ pub async fn wallet_remove(
 
     // Drop any live session / active pointer for this wallet.
     {
-        let mut sessions = state.sessions.lock().map_err(|_| "wallet state poisoned".to_string())?;
+        let mut sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "wallet state poisoned".to_string())?;
         sessions.remove(&name);
     }
     {
-        let mut active = state.active.lock().map_err(|_| "wallet state poisoned".to_string())?;
+        let mut active = state
+            .active
+            .lock()
+            .map_err(|_| "wallet state poisoned".to_string())?;
         if active.as_ref().map(|m| m.name.as_str()) == Some(name.as_str()) {
             *active = None;
         }
@@ -670,7 +732,10 @@ pub async fn wallet_sign_message(
     let signer = active_signer_checked(&state, &expected_address)?;
 
     let s = message_hex.trim();
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
     let message = if s.is_empty() {
         Vec::new()
     } else {
@@ -743,7 +808,7 @@ mod tests {
         let b = derive_key("hunter2long", &salt).unwrap();
         assert_eq!(a, b);
         assert_ne!(a, [0u8; KEY_LEN]); // never an all-zero key
-        // Different password ⇒ different key.
+                                       // Different password ⇒ different key.
         assert_ne!(derive_key("different-pw", &salt).unwrap(), a);
     }
 
@@ -808,5 +873,38 @@ mod tests {
     #[test]
     fn build_tx_requires_chain_id() {
         assert!(build_tx(r#"{"nonce":1}"#).is_err());
+    }
+
+    #[test]
+    fn reveal_key_returns_hex_key_when_unlocked() {
+        let signer = PrivateKeySigner::random();
+        let expected_hex = format!("0x{}", hex::encode(signer.to_bytes()));
+        let addr = signer.address().to_checksum(None);
+        let state = WalletState::default();
+        state.sessions.lock().unwrap().insert("w1".into(), signer);
+        *state.active.lock().unwrap() = Some(WalletMeta {
+            name: "w1".into(),
+            address: addr.clone(),
+        });
+
+        assert_eq!(reveal_key_for(&state, &addr).unwrap(), expected_hex);
+    }
+
+    #[test]
+    fn reveal_key_rejects_when_locked_or_wrong_address() {
+        let state = WalletState::default();
+        // Locked (no session): refuse.
+        assert!(reveal_key_for(&state, "0x0000000000000000000000000000000000000001").is_err());
+
+        let signer = PrivateKeySigner::random();
+        let addr = signer.address().to_checksum(None);
+        state.sessions.lock().unwrap().insert("w1".into(), signer);
+        *state.active.lock().unwrap() = Some(WalletMeta {
+            name: "w1".into(),
+            address: addr,
+        });
+        // Wrong bound address: refuse.
+        let other = PrivateKeySigner::random().address().to_checksum(None);
+        assert!(reveal_key_for(&state, &other).is_err());
     }
 }

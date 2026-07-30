@@ -28,7 +28,10 @@ pub fn abi_encode_address_uint256(address: &[u8; 20], score: u128) -> [u8; 64] {
 pub fn parse_address(s: &str) -> Result<[u8; 20], String> {
     let hex_str = s.strip_prefix("0x").unwrap_or(s);
     if hex_str.len() != 40 {
-        return Err(format!("address must be 20 bytes (40 hex), got len {}", hex_str.len()));
+        return Err(format!(
+            "address must be 20 bytes (40 hex), got len {}",
+            hex_str.len()
+        ));
     }
     let bytes = hex::decode(hex_str).map_err(|e| e.to_string())?;
     let mut out = [0u8; 20];

@@ -2,7 +2,7 @@
 //!
 //! Replaces the inert `catalog::FahStub` with a real adapter for the official **FAHClient v8**.
 //! Two independent channels, per design §3
-//! (`docs/superpowers/specs/2026-07-11-season0-fullsystem-design.md`):
+//! (the "Season-0 Full System — Design One-Pager (Miner + Wallet + Free-Market Mint)"):
 //!
 //! 1. **Control + live progress** — a WebSocket to the client's local API at
 //!    `ws://127.0.0.1:7396/api/websocket`. On connect the client sends a full JSON state
@@ -37,6 +37,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
+// T32/B7b: schema-verified deletion of the managed client's own account-link rows from its
+// client.db. `bundled` (see Cargo.toml) needs no system sqlite3 on the end user's machine.
+use rusqlite::{Connection, OptionalExtension};
 
 use super::catalog::{FAH_ISOLATION_CLASS, SEASON0_FORMULA};
 use super::{
@@ -63,9 +66,6 @@ const FAH_DOWNLOAD_URL: &str = "https://foldingathome.org/start-folding";
 const FAH_CLIENT_CHANNEL: &str = "latest-portable";
 const FAH_PORTABLE_URL: &str = "https://download.foldingathome.org/releases/public/fah-client/windows-10-64bit/release/latest.tar.bz2";
 const FAH_PORTABLE_ARCHIVE_FILENAME: &str = "fah-client_latest.tar.bz2";
-/// Fallback public page / legacy log strings (primary path is portable tar, not NSIS exe).
-const FAH_INSTALLER_URL: &str = FAH_PORTABLE_URL;
-const FAH_INSTALLER_FILENAME: &str = FAH_PORTABLE_ARCHIVE_FILENAME;
 /// Known portable extract dir prefixes under app-data `engine/` (versioned folder inside the tarball).
 const FAH_WIN_PORTABLE_PREFIX: &str = "fah-client_8.5.6-64bit-release";
 const FAH_WIN_PORTABLE_PREFIX_LEGACY: &[&str] = &[
@@ -124,8 +124,17 @@ pub(crate) struct FahPersisted {
     pub username: Option<String>,
     pub team: Option<String>,
     pub passkey: Option<String>,
-    /// High-water mark of credited WUs already minted against. `None` until the first poll.
+    /// DEPRECATED: kept only so (a) old on-disk JSON without this field still round-trips
+    /// (MUST have #[serde(default)] or a pre-B5 file with no `credited_wus` key fails to
+    /// deserialize entirely, silently wiping username/team/passkey — this is a real,
+    /// advisor-flagged bug class, not a style nit) and (b) a downgrade to a pre-B5 binary can
+    /// still read a sane baseline. New code must mirror the ACTIVE username's `credited_wus`
+    /// entry into this field on every write (see below) — never read it for crediting logic.
     pub last_credited_wus: Option<u64>,
+    /// Per-username high-water mark of credited WUs (B5): switching wallets/usernames resumes
+    /// each name's count where it left off instead of clobbering one shared baseline.
+    #[serde(default)]
+    pub credited_wus: std::collections::BTreeMap<String, u64>,
 }
 
 /// The FAH user-stats response shape we care about. Extra fields (name, rank, teams…) are ignored.
@@ -217,6 +226,8 @@ impl FahLive {
 #[derive(Debug, Clone, PartialEq)]
 struct FahUnit {
     id: String,
+    /// Guaranteed-unique React row key within one snapshot; see `derive_units`.
+    row_key: String,
     number: Option<u64>,
     project: String,
     /// 0.0..=1.0 — prefer `wu_progress`, else `progress` (never invented).
@@ -225,6 +236,8 @@ struct FahUnit {
     state: String,
     /// GPU if assignment lists GPUs, else CPU.
     resource: String,
+    /// Raw FAH cause slug from `assignment.cause` (e.g. "cancer"), when reported.
+    cause: Option<String>,
 }
 
 /// Stats-poll throttle + conditional-request cache.
@@ -267,6 +280,55 @@ impl Default for ProvisionSnapshot {
     }
 }
 
+/// Mid-run identity guard (B7): detect live FAH client folding under the wrong username.
+#[derive(Debug, Default)]
+struct MidRunGuard {
+    repushed: bool,
+    mismatches_after_repush: u32,
+    stopped: bool,
+    /// B7b (RESOLVED, option 3): true once this episode has already attempted the automatic
+    /// managed-account unlink, so a mismatch that resumes afterward (e.g. the user re-links via
+    /// the FAH website again) pauses instead of unlinking on every poll — "once per episode".
+    /// Reset to false alongside every other field whenever the guard resets to `default()`
+    /// (identity re-matches, or a fresh Start).
+    unlink_attempted: bool,
+}
+
+/// ~10 status polls (~20-30s) of sustained identity override before the guard escalates past
+/// re-push (either to an automatic unlink attempt, or straight to pause).
+const MID_RUN_GUARD_THRESHOLD: u32 = 10;
+
+/// Pure B7/B7b guard decision: given the current mismatch streak and whether the client is
+/// account-linked / already tried an unlink this episode, decide what happens next. Kept
+/// side-effect-free and fully unit-testable on purpose — the real action (`unlink_managed_account`)
+/// kills and restarts the managed FAH process, which no automated test may ever invoke against a
+/// developer/CI machine's real client (same reason no existing test calls `kill_fah_client`
+/// directly; see `taskkill_outcome_codes`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuardAction {
+    /// Below the escalation threshold — just re-push (already done by the caller).
+    Repush,
+    /// At/above threshold, account-linked, and not yet tried this episode: attempt the automatic
+    /// unlink before falling back to pause.
+    AttemptUnlink,
+    /// At/above threshold, and either not linked or already tried this episode: pause.
+    Pause,
+}
+
+fn decide_guard_action(
+    mismatches_after_repush: u32,
+    linked: bool,
+    unlink_attempted: bool,
+) -> GuardAction {
+    if mismatches_after_repush < MID_RUN_GUARD_THRESHOLD {
+        return GuardAction::Repush;
+    }
+    if linked && !unlink_attempted {
+        return GuardAction::AttemptUnlink;
+    }
+    GuardAction::Pause
+}
+
 /// The real Folding@home `WorkBackend`.
 pub(crate) struct FahBackend {
     state_file: PathBuf,
@@ -276,6 +338,17 @@ pub(crate) struct FahBackend {
     conn: Mutex<ConnHandle>,
     /// Managed-provision progress (installer download/launch), polled by the UI via `engine_report`.
     provision: Arc<Mutex<ProvisionSnapshot>>,
+    guard: Mutex<MidRunGuard>,
+    /// True only after a successful Start that Goat drove — mid-run identity guard stays off for
+    /// bare attach/observe sessions the user started outside Goat.
+    managed: AtomicBool,
+    /// FIX-3 (single-flight): true while an `unlink_managed_account` attempt is running. The
+    /// frontend polls `backend_status` every 3s with no overlap guard, and an unlink can block
+    /// ~20-30s (kill → confirm-down → DB → restart), so overlapping polls could otherwise both
+    /// escalate to a concurrent kill + concurrent `client.db` writers + double respawn. A
+    /// compare-exchange on this flag makes concurrent unlink structurally impossible regardless of
+    /// poll overlap; the loser returns immediately without touching the process or DB.
+    unlink_in_flight: AtomicBool,
 }
 
 impl FahBackend {
@@ -297,6 +370,9 @@ impl FahBackend {
             stats: Mutex::new(StatsCache::default()),
             conn: Mutex::new(ConnHandle::default()),
             provision: Arc::new(Mutex::new(ProvisionSnapshot::default())),
+            guard: Mutex::new(MidRunGuard::default()),
+            managed: AtomicBool::new(false),
+            unlink_in_flight: AtomicBool::new(false),
         }
     }
 
@@ -310,6 +386,265 @@ impl FahBackend {
                 .map_err(|_| "FAH control channel closed — reconnect first".to_string()),
             None => Err("not connected to FAHClient — call connect() first".to_string()),
         }
+    }
+
+    /// Re-push wallet FAH identity and require the live client `config.user` to match.
+    /// Without this, multi-wallet GOAT mint binds the wrong FAH username (e.g. disk GOAT-Bob
+    /// while the client still folds as GOAT-Leader after account login).
+    async fn ensure_live_identity(&self, identity: &FahPersisted) -> Result<(), String> {
+        let Some(want) = identity
+            .username
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+        else {
+            // No GOAT-username configured yet — cannot attribute; let Start proceed for pure science.
+            return Ok(());
+        };
+
+        for attempt in 0u32..6 {
+            if let Some(patch) = identity_config_patch(identity) {
+                let _ = self.enqueue_command(vec![patch]);
+            }
+            // Account login often lands ~0.5–2s after connect; give it time then re-check.
+            tokio::time::sleep(Duration::from_millis(250 + u64::from(attempt) * 200)).await;
+            let tree = self
+                .live
+                .lock()
+                .map(|l| l.tree.clone())
+                .unwrap_or(Value::Null);
+            if live_username_matches(&tree, &want) {
+                if let Ok(mut live) = self.live.lock() {
+                    live.detail = format!("FAH user locked to {want} (wallet attribution).");
+                }
+                return Ok(());
+            }
+        }
+
+        let tree = self
+            .live
+            .lock()
+            .map(|l| l.tree.clone())
+            .unwrap_or(Value::Null);
+        let linked = is_account_linked(&tree);
+
+        // B7b (RESOLVED, option 3): the account overrode every re-push in the retry window above.
+        // Try severing the link in the managed client's OWN client.db before failing closed.
+        if linked {
+            if let Ok(UnlinkOutcome::Unlinked) = self.unlink_managed_account().await {
+                if let Some(patch) = identity_config_patch(identity) {
+                    let _ = self.enqueue_command(vec![patch]);
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let fresh = self
+                    .live
+                    .lock()
+                    .map(|l| l.tree.clone())
+                    .unwrap_or(Value::Null);
+                if live_username_matches(&fresh, &want) {
+                    if let Ok(mut live) = self.live.lock() {
+                        live.detail = post_unlink_recovered_detail(&want);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        let tree = self
+            .live
+            .lock()
+            .map(|l| l.tree.clone())
+            .unwrap_or(Value::Null);
+        let live = read_user_from_tree(&tree).unwrap_or_else(|| "(unset)".to_string());
+        let linked = is_account_linked(&tree);
+        let msg = identity_mismatch_message(&live, &want, linked);
+        if let Ok(mut live_state) = self.live.lock() {
+            live_state.detail = msg.clone();
+        }
+        Err(msg)
+    }
+
+    /// Mid-run identity guard (B7/B7b): if Goat started this session and the live FAH user
+    /// diverges from the wallet-bound username, keep re-pushing identity every status poll (FAH
+    /// Web Control auto-links a browser login to the local client and can overwrite `config.user`
+    /// after Start). After `MID_RUN_GUARD_THRESHOLD` sustained mismatches, escalate per
+    /// `decide_guard_action`: if the client is account-linked and this episode hasn't tried yet,
+    /// attempt the automatic unlink (B7b RESOLVED, option 3 — clear the managed client's own
+    /// `client.db` account-link rows, restart, re-verify) before falling back to pause; otherwise
+    /// pause directly. Never kill the process here — B9 user Stop is the only kill path.
+    async fn check_mid_run_identity(&self, tree: &Value) {
+        if !self.managed.load(Ordering::SeqCst) {
+            return; // never mutate a session Goat didn't start (advisor-flagged: don't touch a
+                    // user's own bare FAH attach/observe session)
+        }
+        let identity = self
+            .persisted
+            .lock()
+            .expect("persisted mutex poisoned")
+            .clone();
+        let Some(want) = identity
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        if live_username_matches(tree, want) {
+            *self.guard.lock().expect("guard mutex poisoned") = MidRunGuard::default();
+            return;
+        }
+        {
+            let guard = self.guard.lock().expect("guard mutex poisoned");
+            if guard.stopped {
+                return; // already auto-stopped this episode; a fresh Start clears it
+            }
+        }
+        // FIX round 2: while the winning poll is inside the ~20-30s unlink, overlapping 3s status
+        // polls must NOT act — otherwise one sees stopped==false + unlink_attempted==true, picks
+        // GuardAction::Pause, and buffers a `pause` in the cmd channel that survives the
+        // kill/reconnect and pauses the freshly-restarted client after a SUCCESSFUL unlink. Skip
+        // re-push and escalation entirely until the in-flight unlink finishes (same Ordering the
+        // single-flight CAS uses).
+        if self.unlink_in_flight.load(Ordering::SeqCst) {
+            return;
+        }
+        let n = {
+            let mut guard = self.guard.lock().expect("guard mutex poisoned");
+            guard.repushed = true;
+            guard.mismatches_after_repush += 1;
+            guard.mismatches_after_repush
+        };
+        // Re-assert wallet GOAT-username every poll while mismatched (fights Web Control).
+        if let Some(patch) = identity_config_patch(&identity) {
+            let _ = self.enqueue_command(vec![patch]);
+        }
+
+        let linked = is_account_linked(tree);
+        let unlink_attempted = self.guard.lock().expect("guard mutex poisoned").unlink_attempted;
+        match decide_guard_action(n, linked, unlink_attempted) {
+            GuardAction::Repush => {}
+            GuardAction::AttemptUnlink => {
+                self.guard.lock().expect("guard mutex poisoned").unlink_attempted = true;
+                let outcome = self.unlink_managed_account().await;
+                // FIX-3: a concurrent poll is already handling the unlink — do nothing here (don't
+                // pause, don't re-push into a client that's mid-restart); let the owner finish and
+                // a later poll re-evaluate against the post-unlink state.
+                if matches!(outcome, Ok(UnlinkOutcome::AlreadyInFlight)) {
+                    return;
+                }
+                if let Some(patch) = identity_config_patch(&identity) {
+                    let _ = self.enqueue_command(vec![patch]);
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let fresh = self
+                    .live
+                    .lock()
+                    .map(|l| l.tree.clone())
+                    .unwrap_or(Value::Null);
+                if matches!(outcome, Ok(UnlinkOutcome::Unlinked))
+                    && live_username_matches(&fresh, want)
+                {
+                    *self.guard.lock().expect("guard mutex poisoned") = MidRunGuard::default();
+                    if let Ok(mut live) = self.live.lock() {
+                        live.detail = post_unlink_recovered_detail(want);
+                    }
+                    return;
+                }
+                self.pause_for_identity_mismatch(&fresh, want);
+            }
+            GuardAction::Pause => {
+                self.pause_for_identity_mismatch(tree, want);
+            }
+        }
+    }
+
+    /// Shared pause path for the mid-run guard (B7/B7b): mark this episode stopped and pause —
+    /// never kill. `tree` may be a post-unlink-attempt snapshot (fresher than the poll's own) so
+    /// the pause message reflects the current linked/live-user state accurately.
+    fn pause_for_identity_mismatch(&self, tree: &Value, want: &str) {
+        {
+            let mut guard = self.guard.lock().expect("guard mutex poisoned");
+            guard.stopped = true;
+        }
+        let live_user = read_user_from_tree(tree).unwrap_or_else(|| "(unset)".to_string());
+        let linked = is_account_linked(tree);
+        let msg = identity_mismatch_message(&live_user, want, linked);
+        let _ = self.enqueue_command(pause_messages()); // pause, NEVER kill — B9 is the only kill
+        if let Ok(mut live) = self.live.lock() {
+            live.detail = msg;
+        }
+    }
+
+    /// B7b (RESOLVED, option 3): sever the managed client's own Folding@home account link by
+    /// clearing exactly the account-link rows in ITS OWN `client.db` — GoatApp owns this managed
+    /// instance end-to-end, so this is clearing our own app's cookies, not a hack against a
+    /// user-run install. The kill → confirm-down → open+delete → restart ordering (and its FIX-1/2/3
+    /// safety invariants) lives in the testable `unlink_managed_account_with` seam; this method
+    /// just supplies the real closures. Managed-instance ONLY (resolves strictly through
+    /// `managed_engine_dir()`). Idempotent: `NoOp` when nothing is linked, `NotManaged` when there
+    /// is no managed `client.db` at all, `AlreadyInFlight` when a concurrent poll is mid-unlink.
+    async fn unlink_managed_account(&self) -> Result<UnlinkOutcome, String> {
+        let Some(db_path) = managed_client_db_path() else {
+            return Ok(UnlinkOutcome::NotManaged);
+        };
+
+        unlink_managed_account_with(
+            &self.unlink_in_flight,
+            // Stop first: mutating client.db while fah-client holds it open would race the
+            // process's own writes and could corrupt the file or be silently overwritten.
+            || {
+                let _ = kill_fah_client();
+            },
+            // FIX-2: confirm the process is actually gone (a shared-lock read succeeds even while
+            // the client is alive-idle) with a bounded poll, using tokio sleep so no worker parks.
+            || async {
+                let deadline = Instant::now() + UNLINK_CONFIRM_DOWN_WAIT;
+                loop {
+                    if !fah_process_running() && !tcp_port_open(FAH_LOCAL_PORT) {
+                        return true;
+                    }
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    tokio::time::sleep(UNLINK_CONFIRM_DOWN_POLL).await;
+                }
+            },
+            // MINOR: blocking DB open+delete runs off the async workers via spawn_blocking.
+            move || async move {
+                match tokio::task::spawn_blocking(move || {
+                    let conn = open_db_after_stop(&db_path, UNLINK_DB_OPEN_WAIT)?;
+                    clear_account_link(conn)
+                })
+                .await
+                {
+                    Ok(res) => res,
+                    Err(join_err) => Err(format!("unlink DB task failed to join: {join_err}")),
+                }
+            },
+            // Restart regardless of NoOp/SchemaMismatch/Unlinked/DB-error (FIX-1) — we took the
+            // client down, so folding must come back. Wait for the socket + a fresh snapshot so an
+            // immediate caller re-verify sees a live tree rather than a stale/disconnected one.
+            || async {
+                if let Some(exe) = managed_fah_client_exe() {
+                    let _ = start_fah_exe_and_wait(&exe).await;
+                    self.wait_until_ws_connected(WS_CONNECT_WAIT_TOTAL).await;
+                    self.wait_until_tree_ready(WS_TREE_WAIT_TOTAL).await;
+                } else {
+                    // Practically unreachable: we found a managed client.db (so a managed engine
+                    // exists) yet no launchable exe remains. If it ever happens, folding stays down
+                    // after a confirmed-down kill — WARN so that path is diagnosable (no behavior
+                    // change; matches the crate's stderr logging convention, see lib.rs).
+                    eprintln!(
+                        "WARN: FAH auto-unlink stopped the managed client but no managed \
+                         fah-client.exe was found to restart it — folding is left stopped; \
+                         Start again to relaunch."
+                    );
+                }
+            },
+        )
+        .await
     }
 
     /// Wait until the control WS task has set `live.connected`.
@@ -354,7 +689,7 @@ impl FahBackend {
         at: u64,
     ) -> Vec<WorkUnit> {
         let mut persisted = self.persisted.lock().expect("persisted mutex poisoned");
-        let baseline = persisted.last_credited_wus;
+        let baseline = persisted.credited_wus.get(username).copied();
 
         let (new_baseline, units, anomaly) = compute_delta(baseline, new_wus, body, username, at);
 
@@ -367,7 +702,10 @@ impl FahBackend {
         }
 
         let mut candidate = persisted.clone();
-        candidate.last_credited_wus = Some(new_baseline);
+        candidate
+            .credited_wus
+            .insert(username.to_string(), new_baseline);
+        candidate.last_credited_wus = Some(new_baseline); // mirror (downgrade safety)
 
         if let Err(err) = save_persisted(&self.state_file, &candidate) {
             drop(persisted);
@@ -380,6 +718,270 @@ impl FahBackend {
         *persisted = candidate;
         units
     }
+}
+
+/// Shared copy for Start-time identity failure and mid-run guard pause detail (B7).
+///
+/// B7b (RESOLVED 2026-07-19, founder-directed option 3 — see
+/// the "Wallet ↔ FAH Identity Binding — Design" spec, §B7b, and
+/// the Task 32 implementation review): GoatApp automatically attempts to sever an overriding
+/// account link by clearing the managed client's OWN account-link rows in its `client.db`
+/// (`unlink_managed_account`) — the official fah-client control socket still exposes no local
+/// unlink/reset command, but GoatApp owns the managed instance's `client.db` outright and may
+/// clear its own app's rows, mirroring the official client's own `Account::reset()` primitive
+/// (`account-token`/`requested-token`/`account`). This message is only ever shown after that
+/// attempt has already run its course this episode (see `check_mid_run_identity`,
+/// `ensure_live_identity`) and the override is STILL present, so it must not overclaim a specific
+/// past action succeeded — it states the standing behavior plus the manual fallback.
+fn identity_mismatch_message(live: &str, want: &str, linked: bool) -> String {
+    let web_hint = " Close app.foldingathome.org / FAH Web Control while Goat folds — a logged-in browser auto-links this machine and overwrites the GOAT-username.";
+    if linked {
+        format!(
+            "FAH client is folding as '{live}', but this wallet requires '{want}'. \
+             Credits will not mint to this wallet. This machine is linked to a Folding@home \
+             account, which can override the local user — GoatApp automatically attempts to \
+             unlink this machine when that happens, to keep your contributions credited to \
+             you.{web_hint} If the override persists, sign in to Folding@home's web client, \
+             unlink this machine from that account (or set User to {want} at \
+             http://127.0.0.1:7396), then Start again."
+        )
+    } else {
+        format!(
+            "FAH client is folding as '{live}', but this wallet requires '{want}'. \
+             Credits will not mint to this wallet.{web_hint} Stop contributing, confirm Wallet shows \
+             {want}, then Start again."
+        )
+    }
+}
+
+/// Honest note shown once the automatic unlink (B7b) actually resolved a mismatch: the link was
+/// severed and the wallet's GOAT identity now matches live. Never implies re-linking happens
+/// automatically — that still requires the user's own Folding@home web client.
+fn post_unlink_recovered_detail(want: &str) -> String {
+    format!(
+        "A linked Folding@home account was overriding your GOAT username, so GoatApp \
+         automatically unlinked this machine from that account. Folding continues as {want}. \
+         To re-link this machine, sign in to Folding@home's web client."
+    )
+}
+
+/// Outcome of an attempt to sever the managed client's account link (B7b). Never an `Err` for
+/// expected "nothing to do" or "not a recognizable client.db" cases — those are legitimate,
+/// abort-cleanly outcomes, not failures. `Err` is reserved for genuinely unexpected conditions
+/// (DB still locked after stopping the client, a mid-transaction failure).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UnlinkOutcome {
+    /// No managed `client.db` exists at all (nothing to unlink).
+    NotManaged,
+    /// `client.db` present, schema recognized, but no account-link rows were set — already
+    /// unlinked; no-op.
+    NoOp,
+    /// Account-link rows existed and were deleted in one transaction.
+    Unlinked,
+    /// `client.db` present but its shape didn't match what fah-client-bastet is known to write —
+    /// aborted with zero writes rather than risk corrupting an unrecognized file.
+    SchemaMismatch(String),
+    /// FIX-3 (single-flight): another `unlink_managed_account` was already running, so this call
+    /// did nothing (no kill, no DB touch, no restart) and left the in-flight owner to finish.
+    AlreadyInFlight,
+}
+
+/// Exact `client.db` `config`-table rows that constitute the Folding@home account link, mirroring
+/// the official client's own unlink primitive, `Account::reset()`
+/// (fah-client-bastet `src/fah/client/Account.cpp:187-200`, confirmed identical in substance
+/// across the v8.5.5/v8.5.6 sources): unset `account-token`, unset `requested-token`, unset the
+/// cached `account` data blob, then restart. Every other row in the same table — `config`
+/// (the serialized Config: user/team/passkey/cause/...), `key` (the client's own RSA identity),
+/// `machine-id` (hardware device id — confirmed via `App::loadConfig()` to be wholly unrelated to
+/// the account link; clearing it would force a NEW RSA key and device identity, which must never
+/// happen here), `version`, `wus`, `change-time-*` — is left completely untouched.
+const ACCOUNT_LINK_KEYS: [&str; 3] = ["account-token", "requested-token", "account"];
+
+/// Rows that must exist for a `client.db` to be trusted as a genuine fah-client-bastet database
+/// before any DELETE is attempted (confirmed present via `App::loadConfig()`/`App::upgradeDB()`
+/// on a real managed `client.db`; see task-32 report Phase 1).
+const CLIENT_DB_SENTINEL_KEYS: [&str; 3] = ["key", "machine-id", "version"];
+
+/// Locate the managed portable client's `client.db`. Managed-instance ONLY: resolves strictly
+/// through `managed_engine_dir()`/`fah_install_dirs()`, the same search tolerance as
+/// `managed_fah_client_exe` (known versioned dirs first, then a depth-limited walk, since the
+/// portable tarball's top-level folder name can drift across releases) — never a system/user-run
+/// FAH install.
+fn managed_client_db_path() -> Option<PathBuf> {
+    let root = managed_engine_dir();
+    for dir in fah_install_dirs() {
+        if !dir.starts_with(&root) {
+            continue;
+        }
+        let candidate = dir.join("client.db");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    // Generic depth-limited file finder despite the name (matches by name under root).
+    find_named_exe_under(&root, "client.db", 4)
+}
+
+/// Open `client.db` after the caller has already CONFIRMED the process is down (FIX-2 — the
+/// orchestrator polls `!fah_process_running() && !tcp_port_open()` first). `Connection::open`
+/// alone can succeed even while SQLite's own lock would reject the first real statement, so this
+/// additionally sets `busy_timeout` (belt-and-suspenders against a lingering OS file handle) and
+/// probes with an actual read, retrying briefly. Blocking by design — MUST be called inside
+/// `tokio::task::spawn_blocking` (see `unlink_managed_account`) so the `std::thread::sleep` here
+/// never parks a tokio worker (MINOR fix).
+fn open_db_after_stop(db_path: &Path, timeout: Duration) -> Result<Connection, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let probe = Connection::open(db_path).and_then(|conn| {
+            conn.busy_timeout(Duration::from_secs(5))?;
+            conn.query_row("SELECT 1 FROM sqlite_master LIMIT 1", [], |_| Ok(()))?;
+            Ok(conn)
+        });
+        match probe {
+            Ok(conn) => return Ok(conn),
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(format!("client.db still locked/unreachable after stop: {err}"));
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        }
+    }
+}
+
+/// Bounded wait for the killed client to be CONFIRMED down before any DB mutation (FIX-2).
+const UNLINK_CONFIRM_DOWN_WAIT: Duration = Duration::from_secs(5);
+const UNLINK_CONFIRM_DOWN_POLL: Duration = Duration::from_millis(200);
+/// Bounded wait for `open_db_after_stop` (belt-and-suspenders; the process is already confirmed
+/// down by the time this runs).
+const UNLINK_DB_OPEN_WAIT: Duration = Duration::from_secs(5);
+
+/// RAII clear of the single-flight flag (FIX-3): whoever won the compare-exchange owns the flag
+/// and clears it on every exit path (normal return, early return, or unwind).
+struct InFlightGuard<'a>(&'a AtomicBool);
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Testable orchestration seam for `unlink_managed_account` (FIX-1/2/3), extracted so the
+/// kill → confirm-down → open+delete → restart ordering is unit-testable via closure injection
+/// (mirrors `graceful_then_kill_with`). Invariants proven by the `unlink_seam_*` tests:
+///
+/// - **FIX-3 (single-flight):** compare-exchange the in-flight flag first; a losing caller returns
+///   `AlreadyInFlight` immediately, having touched neither the process nor the DB.
+/// - **FIX-2 (confirmed-down before mutate):** only after `confirm_down_fn` reports the process is
+///   actually gone do we open/mutate the DB. If it never goes down, abort with `Err` WITHOUT
+///   opening the DB and WITHOUT restarting (the client is still running — a second instance would
+///   fight for the port); the caller then pauses.
+/// - **FIX-1 (never leave folding down):** once we have confirmed the client is down, it is ours to
+///   bring back — the DB result is captured (never `?`-propagated early) and `restart_fn` ALWAYS
+///   runs before returning, even when the DB open/delete errored. Folding resumes on every path
+///   where we took the client down.
+async fn unlink_managed_account_with<CFut, OFut, RFut>(
+    in_flight: &AtomicBool,
+    kill_fn: impl FnOnce(),
+    confirm_down_fn: impl FnOnce() -> CFut,
+    open_and_clear_fn: impl FnOnce() -> OFut,
+    restart_fn: impl FnOnce() -> RFut,
+) -> Result<UnlinkOutcome, String>
+where
+    CFut: std::future::Future<Output = bool>,
+    OFut: std::future::Future<Output = Result<UnlinkOutcome, String>>,
+    RFut: std::future::Future<Output = ()>,
+{
+    // FIX-3: structural single-flight. Loser does nothing and lets the owner finish.
+    if in_flight
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(UnlinkOutcome::AlreadyInFlight);
+    }
+    let _flag = InFlightGuard(in_flight); // cleared on every exit below
+
+    kill_fn();
+
+    if !confirm_down_fn().await {
+        // FIX-2 + FIX-1 "never went down" branch: the client is still up, so we did NOT mutate the
+        // DB and must NOT restart (that would spawn a rival instance). Caller pauses.
+        return Err(
+            "FAH client did not stop within the confirm-down window; skipped account unlink to \
+             avoid mutating client.db while the process holds it (folding continues)."
+                .to_string(),
+        );
+    }
+
+    // Confirmed down: the client is ours to bring back. Capture the DB result but ALWAYS restart
+    // before returning it (FIX-1) — folding must never stay down once we killed it.
+    let db_result = open_and_clear_fn().await;
+    restart_fn().await;
+    db_result
+}
+
+/// Schema-verify then delete exactly `ACCOUNT_LINK_KEYS` from an already-safely-opened `client.db`
+/// connection. Aborts with zero writes (returns `SchemaMismatch`, never touches the file) unless
+/// the `config` table exists with the expected `name`/`value` shape AND every
+/// `CLIENT_DB_SENTINEL_KEYS` row is present. All deletes run in one transaction — all or nothing.
+fn clear_account_link(conn: Connection) -> Result<UnlinkOutcome, String> {
+    let table_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'config'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("read config table schema: {e}"))?;
+    let Some(sql) = table_sql else {
+        return Ok(UnlinkOutcome::SchemaMismatch(
+            "no 'config' table in client.db".to_string(),
+        ));
+    };
+    let normalized = sql.to_lowercase();
+    if !normalized.contains("name") || !normalized.contains("value") {
+        return Ok(UnlinkOutcome::SchemaMismatch(format!(
+            "unexpected 'config' table shape: {sql}"
+        )));
+    }
+
+    for key in CLIENT_DB_SENTINEL_KEYS {
+        let present: Option<i64> = conn
+            .query_row("SELECT 1 FROM config WHERE name = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|e| format!("read sentinel '{key}': {e}"))?;
+        if present.is_none() {
+            return Ok(UnlinkOutcome::SchemaMismatch(format!(
+                "missing expected key '{key}' — not a recognizable fah-client-bastet client.db"
+            )));
+        }
+    }
+
+    let mut any_linked = false;
+    for key in ACCOUNT_LINK_KEYS {
+        let present: Option<i64> = conn
+            .query_row("SELECT 1 FROM config WHERE name = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|e| format!("read link key '{key}': {e}"))?;
+        any_linked |= present.is_some();
+    }
+    if !any_linked {
+        return Ok(UnlinkOutcome::NoOp);
+    }
+
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("begin transaction: {e}"))?;
+    for key in ACCOUNT_LINK_KEYS {
+        tx.execute("DELETE FROM config WHERE name = ?1", [key])
+            .map_err(|e| format!("delete '{key}': {e}"))?;
+    }
+    tx.commit().map_err(|e| format!("commit: {e}"))?;
+
+    Ok(UnlinkOutcome::Unlinked)
 }
 
 #[async_trait]
@@ -591,6 +1193,7 @@ impl WorkBackend for FahBackend {
     }
 
     async fn disconnect(&self) -> Result<(), String> {
+        self.managed.store(false, Ordering::SeqCst);
         {
             let mut conn = self.conn.lock().expect("conn mutex poisoned");
             if let Some(stop) = &conn.stop {
@@ -662,8 +1265,7 @@ impl WorkBackend for FahBackend {
                 live.detail = ACCOUNT_LINKED_DETAIL.to_string();
             }
         }
-        let batches =
-            start_command_batches(&tree, auto_cpus(host_parallelism()), &identity);
+        let batches = start_command_batches(&tree, auto_cpus(host_parallelism()), &identity);
         let last = batches.len().saturating_sub(1);
         for (i, batch) in batches.into_iter().enumerate() {
             self.enqueue_command(batch)?;
@@ -675,14 +1277,29 @@ impl WorkBackend for FahBackend {
         // finishing startup config; one extra fold is cheap and matches Web Control retry.
         tokio::time::sleep(Duration::from_millis(500)).await;
         let _ = self.enqueue_command(fold_messages());
+
+        // Multi-wallet attribution: the live FAH `config.user` MUST match the wallet-bound
+        // GOAT-username (e.g. GOAT-Bob for wallet Bob). Account login can race and overwrite
+        // the first identity push — re-assert and fail Start if it still does not stick.
+        // Re-read persisted identity in case configure landed mid-start.
+        let identity = self
+            .persisted
+            .lock()
+            .expect("persisted mutex poisoned")
+            .clone();
+        self.ensure_live_identity(&identity).await?;
+        *self.guard.lock().expect("guard mutex poisoned") = MidRunGuard::default();
+        self.managed.store(true, Ordering::SeqCst);
         Ok(())
     }
 
     async fn stop(&self) -> Result<(), String> {
-        // Stop = kill the FAH client process (founder decision 2026-07-12, design §C3). FAH v8
+        // Stop = kill the FAH client process (founder decision; the
+        // "GOAT App usability + FAH controls (A–D) — Design" spec, §C3). FAH v8
         // checkpoints work units to disk, so the next Start resumes from the last checkpoint via
         // ensure_engine()'s existing "port closed + exe present → relaunch" path — no change
         // needed there.
+        self.managed.store(false, Ordering::SeqCst);
         let killed = kill_fah_client()?;
         // The process is gone — drop the control socket like disconnect() does.
         let _ = self.disconnect().await;
@@ -700,6 +1317,10 @@ impl WorkBackend for FahBackend {
         self.enqueue_command(pause_messages())
     }
 
+    async fn finish(&self) -> Result<(), String> {
+        self.enqueue_command(finish_messages())
+    }
+
     async fn dump_unit(&self, unit_id: &str) -> Result<(), String> {
         // Official wire (fah-web-client machine.js + fah-client Remote.cpp):
         //   { "cmd": "dump", "unit": "<unit.id>", "time": "..." }
@@ -715,6 +1336,8 @@ impl WorkBackend for FahBackend {
     }
 
     async fn status(&self) -> BackendStatus {
+        let tree = self.live.lock().expect("live mutex poisoned").tree.clone();
+        self.check_mid_run_identity(&tree).await;
         let live = self.live.lock().expect("live mutex poisoned");
         BackendStatus {
             state: live.state.clone(),
@@ -829,13 +1452,12 @@ impl WorkBackend for FahBackend {
         let mut candidate = persisted.clone();
         match key {
             "username" => {
-                let changed = candidate.username.as_deref() != Some(value);
                 candidate.username = Some(value.to_string());
-                if changed {
-                    candidate.last_credited_wus = None;
-                }
+                candidate.last_credited_wus = candidate.credited_wus.get(value).copied();
             }
-            "team" => candidate.team = Some(value.to_string()),
+            // D8: FAH team is locked to the GOAT team. Any caller value is
+            // overridden — the UI no longer offers team configuration.
+            "team" => candidate.team = Some(DEFAULT_TEAM.to_string()),
             "passkey" => candidate.passkey = Some(value.to_string()),
             other => return Err(format!("unknown FAH config key: {other}")),
         }
@@ -1175,14 +1797,15 @@ async fn provision_via_portable(
         EngineState::Provisioning,
         provision_download_detail(0, None),
     );
-    let sha =
-        download_installer_with_progress(FAH_PORTABLE_URL, &archive, provision).await?;
+    let sha = download_installer_with_progress(FAH_PORTABLE_URL, &archive, provision).await?;
 
     if let Err(err) = append_provision_log(state_file, FAH_PORTABLE_URL, &sha, &archive) {
         set_provision(
             provision,
             EngineState::Provisioning,
-            format!("portable archive downloaded (sha256 {sha}); provision-log write failed: {err}"),
+            format!(
+                "portable archive downloaded (sha256 {sha}); provision-log write failed: {err}"
+            ),
         );
     }
 
@@ -1397,6 +2020,14 @@ fn taskkill_invocations() -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Graceful close request (no `/F`) — tried before the forced kill. Same two image names.
+fn taskkill_invocations_graceful() -> Vec<Vec<String>> {
+    ["fah-client.exe", "FAHClient.exe"]
+        .into_iter()
+        .map(|image| vec!["/IM".to_string(), image.to_string()])
+        .collect()
+}
+
 /// `taskkill` exit codes: `0` = terminated, `128` = no such process — fine, Stop is idempotent
 /// (clicking it when FAH isn't running is not an error) — anything else (e.g. `1` access denied)
 /// is a real failure the UI must show.
@@ -1436,6 +2067,67 @@ fn kill_fah_client() -> Result<bool, String> {
     }
 }
 
+fn graceful_then_kill_with(
+    wait: Duration,
+    poll_step: Duration,
+    run_graceful: impl Fn() -> bool,
+    still_running: impl Fn() -> bool,
+    run_forced: impl Fn() -> Result<bool, String>,
+) -> Result<bool, String> {
+    let graceful_ok = run_graceful();
+    if graceful_ok {
+        let deadline = Instant::now() + wait;
+        while Instant::now() < deadline && still_running() {
+            std::thread::sleep(poll_step);
+        }
+    }
+    if !still_running() {
+        return Ok(true);
+    }
+    run_forced()
+}
+
+/// B9 graceful-close window before force-kill. The windowless fah-client ignores the WM_CLOSE
+/// that `taskkill /IM` (no `/F`) sends, so a long window just burns shutdown time while the
+/// process keeps running; FAH v8 checkpoints make the force-kill safe (same basis as Stop's
+/// kill-process copy law). ~2s still covers a client variant that does honor the close.
+pub(crate) const B9_GRACEFUL_WAIT: Duration = Duration::from_secs(2);
+pub(crate) const B9_GRACEFUL_POLL: Duration = Duration::from_millis(200);
+
+/// B9 (founder decision 2026-07-18): closing GoatApp stops the FAH client. Graceful close
+/// request first, force-kill (existing `kill_fah_client`) only if still running after
+/// `B9_GRACEFUL_WAIT`. Blocking by design — called once from the Tauri exit handler.
+pub(crate) fn graceful_then_kill_fah_client() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        graceful_then_kill_with(
+            B9_GRACEFUL_WAIT,
+            B9_GRACEFUL_POLL,
+            || {
+                taskkill_invocations_graceful().into_iter().all(|args| {
+                    std::process::Command::new("taskkill")
+                        .args(&args)
+                        .status()
+                        .ok()
+                        .and_then(|s| s.code())
+                        .map(|c| c == 0 || c == 128)
+                        .unwrap_or(false)
+                })
+            },
+            || fah_process_running() || tcp_port_open(FAH_LOCAL_PORT),
+            kill_fah_client,
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        Err(
+            "Stop (process kill) is only supported on Windows; the Goat desktop app ships on \
+             Windows only."
+                .to_string(),
+        )
+    }
+}
+
 fn default_state_dir() -> PathBuf {
     dirs::data_dir()
         .map(|d| d.join("com.goatcoin.dagoat"))
@@ -1451,10 +2143,24 @@ fn default_state_file() -> PathBuf {
 // ---------------------------------------------------------------------------
 
 fn load_persisted(path: &Path) -> FahPersisted {
-    std::fs::read_to_string(path)
+    let mut persisted: FahPersisted = std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Migrate legacy single-baseline installs: only fires when the map is empty (never overwrites
+    // real per-username data written by the new code).
+    if persisted.credited_wus.is_empty() {
+        if let (Some(u), Some(baseline)) = (&persisted.username, persisted.last_credited_wus) {
+            persisted.credited_wus.insert(u.clone(), baseline);
+        }
+    }
+    // Keep the deprecated field mirroring whatever the CURRENT username's baseline is, so a
+    // downgrade to a pre-B5 binary reads a correct value instead of a stale/foreign one.
+    persisted.last_credited_wus = persisted
+        .username
+        .as_ref()
+        .and_then(|u| persisted.credited_wus.get(u).copied());
+    persisted
 }
 
 fn save_persisted(path: &Path, persisted: &FahPersisted) -> Result<(), String> {
@@ -1466,12 +2172,18 @@ fn save_persisted(path: &Path, persisted: &FahPersisted) -> Result<(), String> {
 }
 
 /// FAH identity snapshot exposed to the UI: username presence (first-run gate), the effective
-/// (persisted-or-default) team, whether a user passkey is set, and the legacy shared-passkey
-/// brand flag. The passkey VALUE never appears here — see `effective_identity`.
+/// (persisted-or-default) team, the passkey value itself, whether a user passkey is set, and
+/// the legacy shared-passkey brand flag. Per founder amendment A2 (spec §16), the passkey VALUE
+/// is included read-only — it is not confidential (fully customizable in FAH's own tooling) and
+/// is shown in the app's Attribution panel; it remains not editable in-app to protect bonus
+/// continuity — see `effective_identity`.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct FahIdentity {
     pub username: Option<String>,
     pub team: String,
+    /// Founder amendment A2 (spec §16): the effective passkey value, read-only. Not confidential;
+    /// `None` when unset.
+    pub passkey: Option<String>,
     /// True when the user has a non-empty stored passkey (optional QRB bonus).
     pub passkey_set: bool,
     /// Backward-compat: true ONLY if the stored passkey equals the retired shared founder key.
@@ -1479,8 +2191,9 @@ pub(crate) struct FahIdentity {
     pub passkey_is_default: bool,
 }
 
-/// Resolve the persisted identity with team default applied. The passkey VALUE never leaves
-/// this module toward the UI — only presence + legacy-brand flags.
+/// Resolve the persisted identity with team default applied. Per founder amendment A2, the
+/// passkey VALUE is now included (read-only, not confidential) alongside presence + legacy-brand
+/// flags.
 fn effective_identity(p: &FahPersisted) -> FahIdentity {
     let username = p.username.clone().filter(|u| !u.trim().is_empty());
     let team = p
@@ -1494,15 +2207,14 @@ fn effective_identity(p: &FahPersisted) -> FahIdentity {
         team,
         passkey_set: passkey.is_some(),
         passkey_is_default: passkey.as_deref() == Some(LEGACY_SHARED_PASSKEY),
+        passkey,
     }
 }
 
 /// Resolve the effective passkey: `Some` only when the user has set a non-blank value.
 /// No automatic fill of the retired shared founder key.
 fn effective_passkey(p: &FahPersisted) -> Option<String> {
-    p.passkey
-        .clone()
-        .filter(|k| !k.trim().is_empty())
+    p.passkey.clone().filter(|k| !k.trim().is_empty())
 }
 
 /// Read the on-disk persisted identity for the UI (App first-run gate + team brand block).
@@ -1854,7 +2566,12 @@ fn iso8601_from_secs(secs: u64) -> String {
 fn identity_config_patch(identity: &FahPersisted) -> Option<String> {
     let mut config = serde_json::Map::new();
     // Username only when the user has actually set one; team is unconditional.
-    if let Some(username) = identity.username.as_ref().map(|u| u.trim()).filter(|u| !u.is_empty()) {
+    if let Some(username) = identity
+        .username
+        .as_ref()
+        .map(|u| u.trim())
+        .filter(|u| !u.is_empty())
+    {
         config.insert("user".to_string(), json!(username));
     }
     let team = identity
@@ -1913,10 +2630,8 @@ fn fold_messages() -> Vec<String> {
     vec![fah_cmd("state", fields)]
 }
 
-/// Still a valid FAH v8 verb builder, but no longer wired to any UI action — `stop()` now kills
-/// the process (design §C3) instead of finishing the current unit. Kept because it stays a real,
-/// correct FAH command and `command_builders_use_official_cmd_envelope` exercises it directly.
-#[allow(dead_code)]
+/// Finish the current unit(s) then pause — FAH v8 `state: finish`. Exposed via `finish()` /
+/// Tauri `backend_finish` (B4a); `stop()` still kills the process (design §C3).
 fn finish_messages() -> Vec<String> {
     let mut fields = serde_json::Map::new();
     fields.insert("state".to_string(), json!("finish"));
@@ -2021,17 +2736,45 @@ fn enable_gpus_and_cpus_config(tree: &Value, cpus: u64) -> String {
 /// 1) Identity (user/team/passkey) — **always**, including account-linked clients, so GOAT team
 ///    1068318 is re-asserted (account token often freezes team=11 until account settings change).
 /// 2) Resource config (GPUs/CPUs) — skipped when account-linked (client ignores it).
-/// 3) Fold state — always (same as Web Control Fold).
+/// 3) Identity again immediately before fold — FAH "Logging into node account" can overwrite
+///    `config.user` after the first push (live bug: disk said GOAT-Bob, client folded as
+///    GOAT-Leader / GOAT-Rookie until re-assert).
+/// 4) Fold state — always (same as Web Control Fold).
 fn start_command_batches(tree: &Value, cpus: u64, identity: &FahPersisted) -> Vec<Vec<String>> {
     let mut batches: Vec<Vec<String>> = Vec::new();
     if let Some(patch) = identity_config_patch(identity) {
-        batches.push(vec![patch]);
+        batches.push(vec![patch.clone()]);
     }
     if !is_account_linked(tree) {
         batches.push(vec![enable_gpus_and_cpus_config(tree, cpus)]);
     }
+    // Re-assert wallet-bound GOAT-username right before fold.
+    if let Some(patch) = identity_config_patch(identity) {
+        batches.push(vec![patch]);
+    }
     batches.push(fold_messages());
     batches
+}
+
+/// Live FAH `config.user` from the state tree (empty when unset).
+fn read_user_from_tree(tree: &Value) -> Option<String> {
+    tree.get("config")
+        .and_then(|c| c.get("user"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// True when the live client user matches the wallet-bound GOAT-username (case-insensitive).
+fn live_username_matches(tree: &Value, want: &str) -> bool {
+    let want = want.trim();
+    if want.is_empty() {
+        return true;
+    }
+    read_user_from_tree(tree)
+        .map(|live| live.eq_ignore_ascii_case(want))
+        .unwrap_or(false)
 }
 
 /// Read `info.version` from the FAH state tree (e.g. `"8.5.5"`).
@@ -2106,7 +2849,11 @@ fn resolve_dump_unit_id(tree: &Value, query: &str) -> Result<String, String> {
                 .and_then(Value::as_u64)
                 .or_else(|| u.get("number").and_then(value_to_f32).map(|f| f as u64));
             if n == Some(num) {
-                if let Some(id) = u.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                if let Some(id) = u
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
                     return Ok(id.to_string());
                 }
                 return Err(format!(
@@ -2244,10 +2991,22 @@ fn apply_path_update(tree: &mut Value, arr: &[Value]) -> bool {
 }
 
 fn derive_units(tree: &Value) -> Vec<FahUnit> {
-    tree.get("units")
+    let mut units: Vec<FahUnit> = tree
+        .get("units")
         .and_then(Value::as_array)
         .map(|arr| arr.iter().filter_map(parse_unit).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Same-project parallel units can collide on the id fallback (id → number →
+    // unit). Disambiguate with the array index so the UI never collapses rows.
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for (idx, unit) in units.iter_mut().enumerate() {
+        let n = seen.entry(unit.id.clone()).or_insert(0);
+        if *n > 0 {
+            unit.row_key = format!("{}#{}", unit.id, idx);
+        }
+        *n += 1;
+    }
+    units
 }
 
 fn parse_unit(value: &Value) -> Option<FahUnit> {
@@ -2309,13 +3068,21 @@ fn parse_unit(value: &Value) -> Option<FahUnit> {
         "CPU".to_string()
     };
 
+    let cause = value
+        .get("assignment")
+        .and_then(|a| a.get("cause"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
     Some(FahUnit {
-        id,
+        id: id.clone(),
+        row_key: id,
         number,
         project,
         progress,
         state,
         resource,
+        cause,
     })
 }
 
@@ -2485,9 +3252,7 @@ fn derive_detail(tree: &Value) -> String {
             parts.push(format!("paused: {reason}"));
         }
     } else if units.iter().any(|u| is_waiting_unit_state(&u.state)) {
-        parts.push(
-            "assigning/downloading work units (progress may stay 0% until RUN)".to_string(),
-        );
+        parts.push("assigning/downloading work units (progress may stay 0% until RUN)".to_string());
     }
 
     if parts.is_empty() {
@@ -2541,12 +3306,14 @@ fn to_unit_progress(unit: &FahUnit) -> UnitProgress {
     let progress_pct = format!("{pct:.1}");
     UnitProgress {
         id: unit.id.clone(),
+        row_key: unit.row_key.clone(),
         number: unit.number,
         project: unit.project.clone(),
         progress: unit.progress,
         progress_pct,
         resource: unit.resource.clone(),
         state: unit.state.clone(),
+        cause: unit.cause.clone(),
     }
 }
 
@@ -2569,42 +3336,97 @@ pub struct FahVizSnapshot {
     pub positions: Vec<[f32; 3]>,
 }
 
-/// Load the newest available FAH visualization from the managed engine `work/` tree.
-/// Returns `Ok(None)` when no frames exist yet (honest empty preview).
-pub fn load_fah_viz_snapshot() -> Result<Option<FahVizSnapshot>, String> {
-    let work_root = managed_engine_dir()
-        .join(FAH_WIN_PORTABLE_PREFIX)
-        .join("work");
-    if !work_root.is_dir() {
-        // Also try system FAH data dirs if portable work/ is missing.
-        return Ok(None);
-    }
+/// Count `viewerFrameN.json` files in one work-unit dir.
+fn viz_frame_count(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_str()
+                        .map(|n| n.starts_with("viewerFrame") && n.ends_with(".json"))
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
 
-    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
-    let entries = std::fs::read_dir(&work_root).map_err(|e| format!("read work dir: {e}"))?;
+/// Pick the work dir to visualize. Preference order (UI spec §7 fix):
+/// 1. the dir named by `unit_id` when it has viewerTop.json AND ≥1 frame,
+/// 2. else the newest-mtime dir that has BOTH (never a frameless dir),
+/// 3. else None. Fixes the two-parallel-units blank preview.
+fn select_viz_dir(work_root: &Path, unit_id: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let entries = std::fs::read_dir(work_root).map_err(|e| format!("read work dir: {e}"))?;
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for ent in entries.flatten() {
         let path = ent.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let top = path.join("viewerTop.json");
-        if !top.is_file() {
+        if !path.is_dir() || !path.join("viewerTop.json").is_file() || viz_frame_count(&path) == 0 {
             continue;
         }
         let modified = ent
             .metadata()
             .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        match &best {
-            None => best = Some((modified, path)),
-            Some((t, _)) if modified > *t => best = Some((modified, path)),
-            _ => {}
+            .unwrap_or(std::time::UNIX_EPOCH);
+        candidates.push((modified, path));
+    }
+    if let Some(id) = unit_id.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some((_, p)) = candidates.iter().find(|(_, p)| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == id || n.contains(id))
+                .unwrap_or(false)
+        }) {
+            return Ok(Some(p.clone()));
         }
     }
+    Ok(candidates
+        .into_iter()
+        .max_by_key(|(t, _)| *t)
+        .map(|(_, p)| p))
+}
 
-    let Some((_t, unit_dir)) = best else {
-        return Ok(None);
+/// Resolve the on-disk FAH `work/` tree for viz frames.
+/// Prefers the current portable prefix, then legacy managed installs (e.g. 8.5.5 while the
+/// constant points at 8.5.6), then any `engine/*/work` directory. Without this fallback the 3D
+/// preview silently returned empty when only `fah-client_8.5.5-…/work` existed.
+fn resolve_managed_work_root() -> Option<PathBuf> {
+    for dir in fah_install_dirs() {
+        let work = dir.join("work");
+        if work.is_dir() {
+            return Some(work);
+        }
+    }
+    let root = managed_engine_dir();
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        for ent in rd.flatten() {
+            let path = ent.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let work = path.join("work");
+            if work.is_dir() {
+                return Some(work);
+            }
+        }
+    }
+    None
+}
+
+/// Load the newest available FAH visualization from the managed engine `work/` tree.
+/// Returns `Ok(None)` when no frames exist yet (honest empty preview).
+pub fn load_fah_viz_snapshot(unit_id: Option<&str>) -> Result<Option<FahVizSnapshot>, String> {
+    let work_root = match resolve_managed_work_root() {
+        Some(w) => w,
+        None => return Ok(None),
     };
+
+    let best = match select_viz_dir(&work_root, unit_id)? {
+        Some(dir) => dir,
+        None => return Ok(None),
+    };
+    let unit_dir = best;
 
     let top_raw = std::fs::read_to_string(unit_dir.join("viewerTop.json"))
         .map_err(|e| format!("read viewerTop: {e}"))?;
@@ -2661,14 +3483,38 @@ pub fn load_fah_viz_snapshot() -> Result<Option<FahVizSnapshot>, String> {
 
     let mut positions = Vec::with_capacity(coords.len());
     for c in coords {
-        let xyz = c.as_array().ok_or_else(|| "coord not array".to_string())?;
-        if xyz.len() < 3 {
-            continue;
-        }
-        let x = xyz[0].as_f64().unwrap_or(0.0) as f32;
-        let y = xyz[1].as_f64().unwrap_or(0.0) as f32;
-        let z = xyz[2].as_f64().unwrap_or(0.0) as f32;
+        let xyz = match c.as_array() {
+            Some(a) if a.len() >= 3 => a,
+            _ => continue, // skip bad coord rows rather than failing the whole snapshot
+        };
+        let x = xyz[0].as_f64().or_else(|| xyz[0].as_i64().map(|i| i as f64)).unwrap_or(0.0) as f32;
+        let y = xyz[1].as_f64().or_else(|| xyz[1].as_i64().map(|i| i as f64)).unwrap_or(0.0) as f32;
+        let z = xyz[2].as_f64().or_else(|| xyz[2].as_i64().map(|i| i as f64)).unwrap_or(0.0) as f32;
         positions.push([x, y, z]);
+    }
+
+    if positions.is_empty() {
+        return Ok(None);
+    }
+
+    // Cap payload size for IPC + WebGL. Real FAH WUs can be 200k+ atoms; shipping all of them
+    // freezes the desktop webview and looks like a blank preview. Subsample evenly.
+    const MAX_VIZ_ATOMS: usize = 8_000;
+    if positions.len() > MAX_VIZ_ATOMS {
+        let stride = positions.len().div_ceil(MAX_VIZ_ATOMS).max(1);
+        let mut p2 = Vec::with_capacity(MAX_VIZ_ATOMS);
+        let mut e2 = Vec::with_capacity(MAX_VIZ_ATOMS);
+        let mut z2 = Vec::with_capacity(MAX_VIZ_ATOMS);
+        let mut i = 0;
+        while i < positions.len() {
+            p2.push(positions[i]);
+            e2.push(elements.get(i).cloned().unwrap_or_else(|| "?".into()));
+            z2.push(atomic_numbers.get(i).copied().unwrap_or(0));
+            i += stride;
+        }
+        positions = p2;
+        elements = e2;
+        atomic_numbers = z2;
     }
 
     Ok(Some(FahVizSnapshot {
@@ -3026,12 +3872,11 @@ mod tests {
             "abcXYZ99",
             "dump by WU number must resolve to FAH unit id"
         );
-        assert_eq!(
-            resolve_dump_unit_id(&tree, "abcXYZ99").unwrap(),
-            "abcXYZ99"
-        );
+        assert_eq!(resolve_dump_unit_id(&tree, "abcXYZ99").unwrap(), "abcXYZ99");
         assert!(
-            resolve_dump_unit_id(&tree, "99").unwrap_err().contains("not found"),
+            resolve_dump_unit_id(&tree, "99")
+                .unwrap_err()
+                .contains("not found"),
             "unknown WU number fails clearly"
         );
     }
@@ -3203,12 +4048,14 @@ mod tests {
             team: Some("goat-team".to_string()),
             passkey: Some("secret-passkey".to_string()),
             last_credited_wus: Some(42),
+            credited_wus: [("alice".to_string(), 42u64)].into_iter().collect(),
         };
         save_persisted(&file, &original).expect("save must succeed");
 
         let loaded = load_persisted(&file);
         assert_eq!(loaded, original);
         assert_eq!(loaded.last_credited_wus, Some(42));
+        assert_eq!(loaded.credited_wus.get("alice"), Some(&42));
 
         // Missing file loads a default (no panic, no fabricated data).
         let missing = load_persisted(&dir.join("does-not-exist.json"));
@@ -3302,6 +4149,16 @@ mod tests {
     }
 
     #[test]
+    fn configure_team_is_locked_to_goat_team() {
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-teamlock-{}", unix_now()));
+        let backend = FahBackend::with_state_file(dir.join("fah-state.json"));
+        backend.configure("team", "11").unwrap(); // any caller value…
+        let reloaded = load_persisted(&dir.join("fah-state.json"));
+        assert_eq!(reloaded.team.as_deref(), Some(DEFAULT_TEAM)); // …locks to 1068318
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn configure_persists_and_rejects_unknown_keys() {
         let dir = std::env::temp_dir().join(format!("dagoat-fah-cfg-{}", unix_now()));
         let backend = FahBackend::with_state_file(dir.join("fah-state.json"));
@@ -3313,6 +4170,7 @@ mod tests {
 
         let reloaded = load_persisted(&dir.join("fah-state.json"));
         assert_eq!(reloaded.username.as_deref(), Some("alice"));
+        assert_eq!(reloaded.team.as_deref(), Some(DEFAULT_TEAM));
         assert_eq!(reloaded.passkey.as_deref(), Some("pk"));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3334,6 +4192,7 @@ mod tests {
                 .persisted
                 .lock()
                 .expect("persisted mutex poisoned");
+            persisted.credited_wus.insert("alice".to_string(), 40);
             persisted.last_credited_wus = Some(40);
             persisted.username = Some("alice".to_string());
         }
@@ -3350,8 +4209,8 @@ mod tests {
                 .lock()
                 .expect("persisted mutex poisoned");
             assert_eq!(
-                persisted.last_credited_wus,
-                Some(40),
+                persisted.credited_wus.get("alice"),
+                Some(&40),
                 "baseline must not advance before a durable save succeeds"
             );
         }
@@ -3363,6 +4222,7 @@ mod tests {
                 .persisted
                 .lock()
                 .expect("persisted mutex poisoned");
+            persisted.credited_wus.insert("alice".to_string(), 40);
             persisted.last_credited_wus = Some(40);
             persisted.username = Some("alice".to_string());
         }
@@ -3377,6 +4237,7 @@ mod tests {
                 .persisted
                 .lock()
                 .expect("persisted mutex poisoned");
+            assert_eq!(persisted.credited_wus.get("alice"), Some(&43));
             assert_eq!(persisted.last_credited_wus, Some(43));
         }
 
@@ -3385,6 +4246,7 @@ mod tests {
 
     #[test]
     fn configure_username_change_resets_baseline_and_prevents_retroactive_credit() {
+        // B5: name kept for continuity; body proves per-username baselines (no wipe on switch).
         let dir = std::env::temp_dir().join(format!("dagoat-fah-userreset-{}", unix_now()));
         let state_file = dir.join("fah-state.json");
         let backend = FahBackend::with_state_file(state_file.clone());
@@ -3394,7 +4256,7 @@ mod tests {
             .expect("configure username");
         {
             let mut persisted = backend.persisted.lock().expect("persisted mutex poisoned");
-            persisted.last_credited_wus = Some(10);
+            persisted.credited_wus.insert("alice".to_string(), 10);
         }
 
         backend
@@ -3403,20 +4265,27 @@ mod tests {
         {
             let persisted = backend.persisted.lock().expect("persisted mutex poisoned");
             assert_eq!(
+                persisted.credited_wus.get("alice"),
+                Some(&10),
+                "alice baseline must survive username switch"
+            );
+            assert_eq!(
+                persisted.credited_wus.get("bob"),
+                None,
+                "bob has no baseline yet"
+            );
+            assert_eq!(
                 persisted.last_credited_wus, None,
-                "baseline reset in memory"
+                "mirror follows active username (bob has none)"
             );
         }
-        let reloaded = load_persisted(&state_file);
-        assert_eq!(reloaded.last_credited_wus, None, "baseline reset on disk");
-        assert_eq!(reloaded.username.as_deref(), Some("bob"));
 
-        // First poll against the new account only records a baseline, no retroactive credit.
+        // First poll for bob only records a baseline, no retroactive credit.
         let units = backend.apply_stats_snapshot(50, "body-a", "bob", 1);
         assert!(units.is_empty());
         {
             let persisted = backend.persisted.lock().expect("persisted mutex poisoned");
-            assert_eq!(persisted.last_credited_wus, Some(50));
+            assert_eq!(persisted.credited_wus.get("bob"), Some(&50));
         }
 
         // Subsequent poll credits normally.
@@ -3425,17 +4294,19 @@ mod tests {
         assert_eq!(units[0].unit_id, "fah-wu-51");
         assert_eq!(units[1].unit_id, "fah-wu-52");
 
-        // Re-configuring with the SAME username must not reset an existing baseline.
+        // Switch back to alice: resume from preserved baseline of 10 → units 11..=15.
         backend
-            .configure("username", "bob")
-            .expect("re-configure same username");
+            .configure("username", "alice")
+            .expect("switch back to alice");
+        let units = backend.apply_stats_snapshot(15, "body-c", "alice", 3);
+        assert_eq!(units.len(), 5);
+        assert_eq!(units[0].unit_id, "fah-wu-11");
+        assert_eq!(units[4].unit_id, "fah-wu-15");
         {
             let persisted = backend.persisted.lock().expect("persisted mutex poisoned");
-            assert_eq!(
-                persisted.last_credited_wus,
-                Some(52),
-                "same-value reconfigure must not reset baseline"
-            );
+            assert_eq!(persisted.credited_wus.get("alice"), Some(&15));
+            assert_eq!(persisted.credited_wus.get("bob"), Some(&52));
+            assert_eq!(persisted.last_credited_wus, Some(15));
         }
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3586,12 +4457,22 @@ mod tests {
             team: Some(DEFAULT_TEAM.into()),
             passkey: None,
             last_credited_wus: None,
+            credited_wus: Default::default(),
         };
         let batches = start_command_batches(&tree, 6, &identity);
-        assert_eq!(batches.len(), 3, "identity + resources + fold");
+        assert_eq!(
+            batches.len(),
+            4,
+            "identity + resources + identity-reassert + fold"
+        );
         assert!(batches[0][0].contains("\"config\"") && batches[0][0].contains("1068318"));
+        assert!(batches[0][0].contains("GOAT-Rocket"));
         assert!(batches[1][0].contains("\"config\"") && batches[1][0].contains("cpus"));
-        assert!(batches[2][0].contains("\"state\":\"fold\""));
+        assert!(
+            batches[2][0].contains("GOAT-Rocket"),
+            "pre-fold identity re-assert"
+        );
+        assert!(batches[3][0].contains("\"state\":\"fold\""));
     }
 
     #[test]
@@ -3603,15 +4484,45 @@ mod tests {
             team: Some(DEFAULT_TEAM.into()),
             passkey: None,
             last_credited_wus: None,
+            credited_wus: Default::default(),
         };
         let batches = start_command_batches(&tree, 6, &identity);
-        assert_eq!(batches.len(), 2, "linked: identity + fold only");
+        assert_eq!(
+            batches.len(),
+            3,
+            "linked: identity + identity-reassert + fold"
+        );
         assert!(
             batches[0][0].contains("1068318"),
             "must re-assert GOAT team even when linked: {}",
             batches[0][0]
         );
-        assert!(batches[1][0].contains("\"state\":\"fold\""));
+        assert!(
+            batches[1][0].contains("GOAT-Rocket"),
+            "pre-fold identity re-assert"
+        );
+        assert!(batches[2][0].contains("\"state\":\"fold\""));
+    }
+
+    #[test]
+    fn live_username_matches_wallet_identity() {
+        assert!(live_username_matches(
+            &json!({"config": {"user": "GOAT-Bob"}}),
+            "GOAT-Bob"
+        ));
+        assert!(live_username_matches(
+            &json!({"config": {"user": "goat-bob"}}),
+            "GOAT-Bob"
+        ));
+        assert!(!live_username_matches(
+            &json!({"config": {"user": "GOAT-Leader"}}),
+            "GOAT-Bob"
+        ));
+        assert!(!live_username_matches(&json!({}), "GOAT-Bob"));
+        assert_eq!(
+            read_user_from_tree(&json!({"config": {"user": "GOAT-Bob"}})).as_deref(),
+            Some("GOAT-Bob")
+        );
     }
 
     #[test]
@@ -3682,8 +4593,14 @@ mod tests {
         let patch = identity_config_patch(&FahPersisted::default()).expect("team always sent");
         let dv: Value = serde_json::from_str(&patch).expect("json");
         assert_eq!(dv.get("cmd").and_then(Value::as_str), Some("config"));
-        assert!(dv.pointer("/config/user").is_none(), "no user field until one is set");
-        assert_eq!(dv.pointer("/config/team").and_then(Value::as_u64), Some(1068318));
+        assert!(
+            dv.pointer("/config/user").is_none(),
+            "no user field until one is set"
+        );
+        assert_eq!(
+            dv.pointer("/config/team").and_then(Value::as_u64),
+            Some(1068318)
+        );
         assert!(
             dv.pointer("/config/passkey").is_none(),
             "no passkey field when unset: {patch}"
@@ -3694,6 +4611,7 @@ mod tests {
             team: Some("0".to_string()),
             passkey: Some("pk".to_string()),
             last_credited_wus: None,
+            credited_wus: Default::default(),
         };
         let patch = identity_config_patch(&identity).expect("patch present");
         let v: Value = serde_json::from_str(&patch).expect("identity json");
@@ -3773,6 +4691,25 @@ mod tests {
     }
 
     #[test]
+    fn effective_identity_exposes_passkey_value() {
+        // Founder amendment A2 (spec §16): the passkey is not confidential (fully customizable
+        // in FAH's own tooling) and must be surfaced read-only in FahIdentity.
+        let unset = effective_identity(&FahPersisted::default());
+        assert!(unset.passkey.is_none(), "unset passkey must expose as None");
+
+        let custom_passkey = "0123456789abcdef0123456789abcdef";
+        let custom = effective_identity(&FahPersisted {
+            passkey: Some(custom_passkey.to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            custom.passkey.as_deref(),
+            Some(custom_passkey),
+            "A2: passkey value must be exposed read-only in FahIdentity"
+        );
+    }
+
+    #[test]
     fn effective_identity_has_no_username_default() {
         let id = effective_identity(&FahPersisted {
             username: Some("   ".into()),
@@ -3791,7 +4728,10 @@ mod tests {
     }
 
     #[test]
-    fn fah_identity_serialization_never_carries_the_passkey_value() {
+    fn fah_identity_serialization_carries_the_passkey_value() {
+        // Founder amendment A2 (spec §16): reverses the prior contract — the passkey is not
+        // confidential (fully customizable in FAH's own tooling), so it is now included
+        // read-only in the FahIdentity payload sent to the UI.
         let identity = effective_identity(&FahPersisted {
             passkey: Some("super-secret-passkey".into()),
             ..Default::default()
@@ -3802,17 +4742,22 @@ mod tests {
             obj.keys()
                 .cloned()
                 .collect::<std::collections::BTreeSet<_>>(),
-            ["username", "team", "passkey_is_default", "passkey_set"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            [
+                "username",
+                "team",
+                "passkey",
+                "passkey_is_default",
+                "passkey_set"
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
         );
         let raw = v.to_string();
         assert!(
-            !raw.contains("\"passkey\":"),
-            "bare passkey key leaked: {raw}"
+            raw.contains("\"passkey\":\"super-secret-passkey\""),
+            "A2: passkey value must be present in the identity payload: {raw}"
         );
-        assert!(!raw.contains("super-secret-passkey"));
     }
 
     #[test]
@@ -3973,16 +4918,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dagoat-fah-provlog-{}", unix_now()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let state_file = dir.join("fah-state.json");
-        let dest = dir.join("engines").join(FAH_INSTALLER_FILENAME);
+        let dest = dir.join("engines").join(FAH_PORTABLE_ARCHIVE_FILENAME);
 
-        append_provision_log(&state_file, FAH_INSTALLER_URL, "deadbeef", &dest)
+        append_provision_log(&state_file, FAH_PORTABLE_URL, "deadbeef", &dest)
             .expect("first log append");
-        append_provision_log(&state_file, FAH_INSTALLER_URL, "cafef00d", &dest)
+        append_provision_log(&state_file, FAH_PORTABLE_URL, "cafef00d", &dest)
             .expect("second log append");
 
         let log = std::fs::read_to_string(state_file.with_file_name("engine-provision.log"))
             .expect("provision log readable");
-        assert!(log.contains(FAH_INSTALLER_URL), "records the source URL");
+        assert!(log.contains(FAH_PORTABLE_URL), "records the source URL");
         assert!(log.contains("sha256=deadbeef"), "records the first sha");
         assert!(log.contains("sha256=cafef00d"), "appends, not overwrites");
         assert_eq!(log.lines().count(), 2, "one provenance line per download");
@@ -4071,10 +5016,884 @@ mod tests {
     }
 
     #[test]
+    fn taskkill_invocations_graceful_targets_both_without_force() {
+        let invocations = taskkill_invocations_graceful();
+        assert_eq!(
+            invocations,
+            vec![
+                vec!["/IM".to_string(), "fah-client.exe".to_string()],
+                vec!["/IM".to_string(), "FAHClient.exe".to_string()],
+            ]
+        );
+        for args in &invocations {
+            assert!(
+                !args.iter().any(|a| a == "/F"),
+                "graceful invocations must not include /F: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn graceful_then_kill_with_still_running_calls_forced_after_graceful() {
+        use std::cell::Cell;
+        let order: Cell<Vec<&'static str>> = Cell::new(Vec::new());
+        let take = |cell: &Cell<Vec<&'static str>>| cell.replace(Vec::new());
+        let push = |cell: &Cell<Vec<&'static str>>, step: &'static str| {
+            let mut v = cell.take();
+            v.push(step);
+            cell.set(v);
+        };
+
+        let result = graceful_then_kill_with(
+            Duration::from_millis(5),
+            Duration::from_millis(1),
+            || {
+                push(&order, "graceful");
+                true
+            },
+            || true,
+            || {
+                push(&order, "forced");
+                Ok(false)
+            },
+        );
+        assert_eq!(result, Ok(false));
+        assert_eq!(take(&order), vec!["graceful", "forced"]);
+    }
+
+    #[test]
+    fn graceful_then_kill_with_gone_after_graceful_skips_forced() {
+        use std::cell::Cell;
+        let forced = Cell::new(false);
+        let result = graceful_then_kill_with(
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+            || true,
+            || false,
+            || {
+                forced.set(true);
+                Ok(false)
+            },
+        );
+        assert_eq!(result, Ok(true));
+        assert!(!forced.get(), "forced must not run when already gone");
+    }
+
+    #[test]
+    fn b9_graceful_window_is_short() {
+        // FIX-B: the windowless fah-client ignores WM_CLOSE, so every clean exit used to burn
+        // the full window before force-kill. Pin the window at ~2s so it can't silently grow.
+        assert!(
+            B9_GRACEFUL_WAIT <= Duration::from_secs(2),
+            "B9 graceful window must stay short (~2s): {B9_GRACEFUL_WAIT:?}"
+        );
+        assert!(
+            B9_GRACEFUL_POLL < B9_GRACEFUL_WAIT,
+            "poll step must be shorter than the window: {B9_GRACEFUL_POLL:?}"
+        );
+    }
+
+    #[test]
+    fn graceful_then_kill_with_graceful_fail_short_circuits_to_forced() {
+        use std::cell::Cell;
+        let still_polled = Cell::new(0u32);
+        let forced = Cell::new(false);
+        let wait = Duration::from_millis(200);
+        let started = Instant::now();
+        let result = graceful_then_kill_with(
+            wait,
+            Duration::from_millis(50),
+            || false, // headless process: taskkill without /F fails
+            || {
+                still_polled.set(still_polled.get() + 1);
+                true
+            },
+            || {
+                forced.set(true);
+                Ok(true)
+            },
+        );
+        let elapsed = started.elapsed();
+        assert_eq!(result, Ok(true));
+        assert!(forced.get(), "forced must run when graceful fails");
+        assert!(
+            elapsed < wait,
+            "must not burn the full wait window on graceful failure: {elapsed:?} vs {wait:?}"
+        );
+        // still_running is only checked once after the skipped wait loop (not polled in a wait loop).
+        assert_eq!(
+            still_polled.get(),
+            1,
+            "still_running should not be polled in a wait loop when graceful fails"
+        );
+    }
+
+    #[test]
+    fn identity_mismatch_message_avoids_forbidden_vocabulary() {
+        let forbidden = [
+            "wage",
+            "paycheck",
+            "income",
+            "salary",
+            "profit",
+            "get paid",
+            "earn money",
+            "passive income",
+            "protects science",
+        ];
+        for linked in [true, false] {
+            let msg = identity_mismatch_message("some-live-user", "some-wanted-user", linked);
+            let lower = msg.to_ascii_lowercase();
+            for word in forbidden {
+                assert!(
+                    !lower.contains(word),
+                    "linked={linked} message must not contain '{word}': {msg}"
+                );
+            }
+        }
+    }
+
+    /// B7b RESOLVED (option 3): GoatApp DOES now automatically attempt to unlink the managed
+    /// client's account — the linked-branch copy must describe that standing behavior (not the
+    /// superseded "GoatApp cannot unlink" claim) while still pointing at the manual fallback.
+    #[test]
+    fn identity_mismatch_message_linked_branch_describes_automatic_unlink_attempt() {
+        let msg = identity_mismatch_message("some-live-user", "some-wanted-user", true);
+        let lower = msg.to_ascii_lowercase();
+        assert!(
+            lower.contains("automatically attempts to unlink"),
+            "must describe the automatic unlink behavior (B7b resolved): {msg}"
+        );
+        assert!(
+            !lower.contains("cannot unlink"),
+            "must not overclaim GoatApp is unable to unlink (superseded by B7b option 3): {msg}"
+        );
+        assert!(
+            lower.contains("web client"),
+            "must still point the user at Folding@home's own web client as the manual fallback: {msg}"
+        );
+    }
+
+    #[test]
+    fn post_unlink_recovered_detail_is_honest_and_names_the_wallet() {
+        let msg = post_unlink_recovered_detail("GOAT-Alice");
+        let lower = msg.to_ascii_lowercase();
+        assert!(msg.contains("GOAT-Alice"));
+        assert!(lower.contains("automatically unlinked"));
+        assert!(
+            lower.contains("web client"),
+            "re-linking must still require the user's own FAH web client: {msg}"
+        );
+        for banned in ["wage", "paycheck", "salary", "income", "guaranteed"] {
+            assert!(!lower.contains(banned), "banned vocabulary '{banned}': {msg}");
+        }
+    }
+
+    // --- B7b guard-ordering decision table (pure; no real process/DB touched) ---------------
+
+    #[test]
+    fn decide_guard_action_repushes_below_threshold_regardless_of_linked_state() {
+        for n in 0..MID_RUN_GUARD_THRESHOLD {
+            for linked in [false, true] {
+                for tried in [false, true] {
+                    assert_eq!(
+                        decide_guard_action(n, linked, tried),
+                        GuardAction::Repush,
+                        "n={n} linked={linked} tried={tried}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decide_guard_action_pauses_at_threshold_when_not_linked() {
+        assert_eq!(
+            decide_guard_action(MID_RUN_GUARD_THRESHOLD, false, false),
+            GuardAction::Pause
+        );
+        assert_eq!(
+            decide_guard_action(MID_RUN_GUARD_THRESHOLD, false, true),
+            GuardAction::Pause
+        );
+    }
+
+    #[test]
+    fn decide_guard_action_attempts_unlink_once_then_pauses_the_rest_of_the_episode() {
+        // First time the threshold is hit while linked and not yet tried: attempt unlink.
+        assert_eq!(
+            decide_guard_action(MID_RUN_GUARD_THRESHOLD, true, false),
+            GuardAction::AttemptUnlink,
+            "linked + not yet tried this episode must attempt the automatic unlink"
+        );
+        // Already tried this episode (even though still linked/mismatched): pause, never spam
+        // repeated unlink attempts against the same episode.
+        assert_eq!(
+            decide_guard_action(MID_RUN_GUARD_THRESHOLD, true, true),
+            GuardAction::Pause,
+            "once per episode — a second attempt in the same episode must pause instead"
+        );
+        assert_eq!(
+            decide_guard_action(MID_RUN_GUARD_THRESHOLD + 5, true, true),
+            GuardAction::Pause,
+            "stays pause on later polls of the same episode"
+        );
+    }
+
+    // --- B7b client.db schema-verify + delete (real SQLite, temp fixture files only) --------
+
+    /// Build a temp `client.db` with the exact schema/rows a real fah-client-bastet install has
+    /// (see task-32 report Phase 1: single `config` table, `name TEXT PRIMARY KEY, value`).
+    /// `linked` controls whether the account-link rows are present.
+    fn make_fixture_client_db(path: &Path, linked: bool) {
+        let conn = Connection::open(path).expect("open fixture client.db");
+        conn.execute(
+            "CREATE TABLE \"config\" (name TEXT PRIMARY KEY, value)",
+            [],
+        )
+        .expect("create config table");
+        // Non-account rows every real client.db has — must survive untouched.
+        conn.execute(
+            "INSERT INTO config (name, value) VALUES ('config', ?1)",
+            [r#"{"user":"GOAT-Alice","team":1068318,"passkey":"","cause":"any"}"#],
+        )
+        .expect("insert config blob");
+        conn.execute(
+            "INSERT INTO config (name, value) VALUES ('key', 'fake-rsa-pem')",
+            [],
+        )
+        .expect("insert key");
+        conn.execute(
+            "INSERT INTO config (name, value) VALUES ('machine-id', 'fake-machine-id')",
+            [],
+        )
+        .expect("insert machine-id");
+        conn.execute("INSERT INTO config (name, value) VALUES ('version', 2)", [])
+            .expect("insert version");
+        conn.execute("INSERT INTO config (name, value) VALUES ('wus', 0)", [])
+            .expect("insert wus");
+        if linked {
+            conn.execute(
+                "INSERT INTO config (name, value) VALUES ('account-token', 'fake-token')",
+                [],
+            )
+            .expect("insert account-token");
+            conn.execute(
+                "INSERT INTO config (name, value) VALUES ('requested-token', 'fake-token')",
+                [],
+            )
+            .expect("insert requested-token");
+            conn.execute(
+                "INSERT INTO config (name, value) VALUES ('account', '{\"pubkey\":\"x\"}')",
+                [],
+            )
+            .expect("insert account blob");
+        }
+    }
+
+    fn config_row_names(path: &Path) -> Vec<String> {
+        let conn = Connection::open(path).expect("open for inspection");
+        let mut stmt = conn
+            .prepare("SELECT name FROM config ORDER BY name")
+            .expect("prepare");
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .expect("query")
+            .map(|r| r.expect("row"))
+            .collect()
+    }
+
+    #[test]
+    fn clear_account_link_deletes_only_the_token_keys_user_team_passkey_survive() {
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-unlink-fixture-{}", unix_now()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db_path = dir.join("client.db");
+        make_fixture_client_db(&db_path, true);
+
+        let conn = Connection::open(&db_path).expect("reopen");
+        let outcome = clear_account_link(conn).expect("clear_account_link");
+        assert_eq!(outcome, UnlinkOutcome::Unlinked);
+
+        let remaining = config_row_names(&db_path);
+        assert_eq!(
+            remaining,
+            vec!["config", "key", "machine-id", "version", "wus"],
+            "exactly the three account-link rows must be gone; everything else (including the \
+             user/team/passkey config blob) must survive untouched: {remaining:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_account_link_is_noop_when_nothing_is_linked() {
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-unlink-noop-{}", unix_now()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db_path = dir.join("client.db");
+        make_fixture_client_db(&db_path, false);
+
+        let before = config_row_names(&db_path);
+        let conn = Connection::open(&db_path).expect("reopen");
+        let outcome = clear_account_link(conn).expect("clear_account_link");
+        assert_eq!(outcome, UnlinkOutcome::NoOp);
+
+        let after = config_row_names(&db_path);
+        assert_eq!(before, after, "NoOp must not touch any row");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_account_link_aborts_with_zero_writes_on_missing_config_table() {
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-unlink-notable-{}", unix_now()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db_path = dir.join("client.db");
+        // A valid SQLite file, but not shaped like a fah-client-bastet client.db at all.
+        let conn = Connection::open(&db_path).expect("open");
+        conn.execute("CREATE TABLE unrelated (x INTEGER)", [])
+            .expect("create unrelated table");
+        conn.execute("INSERT INTO unrelated (x) VALUES (1)", [])
+            .expect("insert");
+        drop(conn);
+
+        let conn = Connection::open(&db_path).expect("reopen");
+        let outcome = clear_account_link(conn).expect("clear_account_link");
+        match outcome {
+            UnlinkOutcome::SchemaMismatch(reason) => {
+                assert!(reason.to_lowercase().contains("config"), "reason={reason}")
+            }
+            other => panic!("expected SchemaMismatch, got {other:?}"),
+        }
+
+        // Zero writes: the unrelated table/row must be exactly as before.
+        let conn = Connection::open(&db_path).expect("verify");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM unrelated", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 1, "abort must mutate nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_account_link_aborts_with_zero_writes_on_missing_sentinel_key() {
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-unlink-sentinel-{}", unix_now()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db_path = dir.join("client.db");
+        // A real 'config' table shape, but missing 'machine-id'/'key'/'version' — e.g. a
+        // corrupted or foreign file that happens to share the table name. Include an
+        // account-token row to prove presence of link keys never overrides the sentinel check.
+        let conn = Connection::open(&db_path).expect("open");
+        conn.execute(
+            "CREATE TABLE \"config\" (name TEXT PRIMARY KEY, value)",
+            [],
+        )
+        .expect("create config table");
+        conn.execute(
+            "INSERT INTO config (name, value) VALUES ('account-token', 'fake-token')",
+            [],
+        )
+        .expect("insert account-token");
+        drop(conn);
+
+        let conn = Connection::open(&db_path).expect("reopen");
+        let outcome = clear_account_link(conn).expect("clear_account_link");
+        assert!(matches!(outcome, UnlinkOutcome::SchemaMismatch(_)));
+
+        let remaining = config_row_names(&db_path);
+        assert_eq!(
+            remaining,
+            vec!["account-token"],
+            "abort must mutate nothing, even though an account-link key was present"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn managed_client_db_path_never_resolves_outside_managed_engine_dir() {
+        // Whatever this returns (Some or None depending on the host), it must be rooted under
+        // managed_engine_dir() — never a system/user-run FAH install path.
+        if let Some(path) = managed_client_db_path() {
+            assert!(
+                path.starts_with(managed_engine_dir()),
+                "path escaped managed_engine_dir(): {}",
+                path.display()
+            );
+            assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("client.db"));
+        }
+    }
+
+    // --- B7b unlink orchestration seam (FIX-1/2/3) — closure-injected, no real process/DB ------
+    //
+    // These exercise `unlink_managed_account_with` directly with fake kill/confirm/open/restart
+    // closures (mirroring the `graceful_then_kill_with` seam pattern), so the kill→confirm-down→
+    // open+delete→restart ordering and its safety invariants are covered without ever touching a
+    // real `fah-client.exe` or `client.db` on the machine running `cargo test`.
+
+    #[tokio::test]
+    async fn unlink_seam_always_restarts_after_kill_even_on_db_error() {
+        // FIX-1: once the client is killed and confirmed down, restart MUST run on every path,
+        // including a DB-delete error — folding never stays down.
+        let in_flight = AtomicBool::new(false);
+        let killed = Arc::new(AtomicBool::new(false));
+        let opened = Arc::new(AtomicBool::new(false));
+        let restarted = Arc::new(AtomicBool::new(false));
+        let (k, o, r) = (
+            Arc::clone(&killed),
+            Arc::clone(&opened),
+            Arc::clone(&restarted),
+        );
+
+        let outcome = unlink_managed_account_with(
+            &in_flight,
+            move || {
+                k.store(true, Ordering::SeqCst);
+            },
+            || async { true }, // confirmed down
+            move || async move {
+                o.store(true, Ordering::SeqCst);
+                Err("simulated client.db delete failure".to_string())
+            },
+            move || async move {
+                r.store(true, Ordering::SeqCst);
+            },
+        )
+        .await;
+
+        assert!(killed.load(Ordering::SeqCst), "kill ran");
+        assert!(opened.load(Ordering::SeqCst), "DB step ran (confirmed down)");
+        assert!(
+            restarted.load(Ordering::SeqCst),
+            "FIX-1: restart MUST run even when the DB delete errored"
+        );
+        assert!(outcome.is_err(), "the DB error propagates AFTER restart");
+        assert!(!in_flight.load(Ordering::SeqCst), "single-flight flag cleared");
+    }
+
+    #[tokio::test]
+    async fn unlink_seam_happy_path_restarts_and_returns_unlinked() {
+        let in_flight = AtomicBool::new(false);
+        let restarted = Arc::new(AtomicBool::new(false));
+        let r = Arc::clone(&restarted);
+        let outcome = unlink_managed_account_with(
+            &in_flight,
+            || {},
+            || async { true },
+            || async { Ok(UnlinkOutcome::Unlinked) },
+            move || async move {
+                r.store(true, Ordering::SeqCst);
+            },
+        )
+        .await;
+        assert_eq!(outcome, Ok(UnlinkOutcome::Unlinked));
+        assert!(restarted.load(Ordering::SeqCst), "restart runs on the success path too");
+        assert!(!in_flight.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn unlink_seam_confirm_down_fail_does_not_mutate_or_restart() {
+        // FIX-2 + FIX-1 "never went down": the client is still up → no DB mutation AND no restart
+        // (a second instance would fight for the port); the error is surfaced so the caller pauses.
+        let in_flight = AtomicBool::new(false);
+        let opened = Arc::new(AtomicBool::new(false));
+        let restarted = Arc::new(AtomicBool::new(false));
+        let (o, r) = (Arc::clone(&opened), Arc::clone(&restarted));
+
+        let outcome = unlink_managed_account_with(
+            &in_flight,
+            || {}, // kill attempted, but…
+            || async { false }, // …it never went down
+            move || async move {
+                o.store(true, Ordering::SeqCst);
+                Ok(UnlinkOutcome::Unlinked)
+            },
+            move || async move {
+                r.store(true, Ordering::SeqCst);
+            },
+        )
+        .await;
+
+        assert!(outcome.is_err(), "still-up must surface an error (caller pauses)");
+        assert!(
+            !opened.load(Ordering::SeqCst),
+            "FIX-2: must NOT open/mutate client.db while the process is still up"
+        );
+        assert!(
+            !restarted.load(Ordering::SeqCst),
+            "FIX-1: must NOT restart when the client never went down (still running)"
+        );
+        assert!(!in_flight.load(Ordering::SeqCst), "flag cleared on the abort path too");
+    }
+
+    #[tokio::test]
+    async fn unlink_seam_single_flight_blocks_concurrent_call() {
+        // FIX-3: a call that finds the flag already set does nothing — no kill, no DB, no restart —
+        // and leaves the flag for the in-flight owner to clear.
+        let in_flight = AtomicBool::new(true); // pretend another unlink is already running
+        let touched = Arc::new(AtomicBool::new(false));
+        let (tk, to_, tr) = (
+            Arc::clone(&touched),
+            Arc::clone(&touched),
+            Arc::clone(&touched),
+        );
+
+        let outcome = unlink_managed_account_with(
+            &in_flight,
+            move || {
+                tk.store(true, Ordering::SeqCst);
+            },
+            || async { true },
+            move || async move {
+                to_.store(true, Ordering::SeqCst);
+                Ok(UnlinkOutcome::Unlinked)
+            },
+            move || async move {
+                tr.store(true, Ordering::SeqCst);
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, Ok(UnlinkOutcome::AlreadyInFlight));
+        assert!(
+            !touched.load(Ordering::SeqCst),
+            "FIX-3: a blocked concurrent call must not kill/mutate/restart anything"
+        );
+        assert!(
+            in_flight.load(Ordering::SeqCst),
+            "the owner's in-flight flag stays set (only the owner clears it)"
+        );
+    }
+
+    #[test]
+    fn load_persisted_migrates_legacy_single_baseline_into_credited_wus() {
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-b5-migrate-{}", unix_now()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("fah-state.json");
+        // Pre-B5 shape: no credited_wus key at all.
+        std::fs::write(
+            &path,
+            r#"{"username":"alice","team":"1068318","passkey":"pk","last_credited_wus":42}"#,
+        )
+        .expect("write legacy json");
+        let loaded = load_persisted(&path);
+        assert_eq!(loaded.username.as_deref(), Some("alice"));
+        assert_eq!(loaded.team.as_deref(), Some("1068318"));
+        assert_eq!(loaded.passkey.as_deref(), Some("pk"));
+        assert_eq!(
+            loaded.credited_wus.get("alice"),
+            Some(&42),
+            "legacy baseline migrates into map"
+        );
+        assert_eq!(loaded.last_credited_wus, Some(42));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_persisted_missing_credited_wus_does_not_wipe_identity_fields() {
+        // Advisor-flagged bug class: without #[serde(default)] on credited_wus, a pre-B5 file
+        // fails to deserialize entirely and silently wipes username/team/passkey to Default.
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-b5-serde-default-{}", unix_now()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("fah-state.json");
+        std::fs::write(
+            &path,
+            r#"{"username":"carol","team":"99","passkey":"secret","last_credited_wus":7}"#,
+        )
+        .expect("write pre-B5 json without credited_wus");
+        let loaded = load_persisted(&path);
+        assert_eq!(loaded.username.as_deref(), Some("carol"));
+        assert_eq!(loaded.team.as_deref(), Some("99"));
+        assert_eq!(loaded.passkey.as_deref(), Some("secret"));
+        assert_eq!(loaded.credited_wus.get("carol"), Some(&7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_persisted_does_not_overwrite_existing_credited_wus_map() {
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-b5-no-clobber-{}", unix_now()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("fah-state.json");
+        // New-code shape: map already populated; last_credited_wus is stale/foreign.
+        std::fs::write(
+            &path,
+            r#"{"username":"alice","team":null,"passkey":null,"last_credited_wus":7,"credited_wus":{"alice":99}}"#,
+        )
+        .expect("write post-B5 json");
+        let loaded = load_persisted(&path);
+        assert_eq!(
+            loaded.credited_wus.get("alice"),
+            Some(&99),
+            "migration must not clobber real per-username data with stale last_credited_wus"
+        );
+        // Mirror step still rewrites last_credited_wus from the active username's map entry.
+        assert_eq!(loaded.last_credited_wus, Some(99));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn mid_run_identity_guard_repushes_then_pauses_on_mismatch() {
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-b7-guard-{}", unix_now()));
+        let backend = FahBackend::with_state_file(dir.join("fah-state.json"));
+        backend
+            .configure("username", "GOAT-Alice")
+            .expect("configure");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        backend.conn.lock().expect("conn").cmd_tx = Some(tx);
+        backend.managed.store(true, Ordering::SeqCst);
+
+        // Non-linked mismatch (no `info.account`): exercises the re-push-then-pause path directly
+        // (never reaches `GuardAction::AttemptUnlink`, so this never calls the real
+        // `unlink_managed_account`/`kill_fah_client` — see `decide_guard_action_*` tests below for
+        // the linked/once-per-episode ordering contract, which is safe to unit-test in isolation).
+        let mismatch = json!({"config": {"user": "someone-else"}});
+        let want_patch =
+            identity_config_patch(&backend.persisted.lock().expect("persisted").clone())
+                .expect("identity patch");
+
+        // Polls 1..9: re-push identity every time (fights Web Control); no pause yet.
+        for i in 1u32..=9 {
+            backend.check_mid_run_identity(&mismatch).await;
+            let msg = rx.try_recv().expect("repush enqueued");
+            assert_eq!(msg, vec![want_patch.clone()], "poll {i}");
+            assert!(rx.try_recv().is_err(), "no pause on poll {i}");
+            assert!(backend.guard.lock().expect("guard").repushed);
+            assert_eq!(
+                backend.guard.lock().expect("guard").mismatches_after_repush,
+                i
+            );
+            assert!(!backend.guard.lock().expect("guard").stopped);
+        }
+
+        // 10th poll: still re-pushes, then pauses directly (not linked, so
+        // `decide_guard_action` returns `Pause` rather than `AttemptUnlink`) — never kills, B9
+        // user Stop is the only kill path.
+        backend.check_mid_run_identity(&mismatch).await;
+        let repush = rx.try_recv().expect("10th repush");
+        assert_eq!(repush, vec![want_patch]);
+        let pause = rx.try_recv().expect("pause enqueued on 10th mismatch");
+        assert_eq!(pause, pause_messages());
+        assert!(rx.try_recv().is_err());
+        let detail = backend.live.lock().expect("live").detail.clone();
+        assert!(
+            detail.contains("GOAT-Alice") && detail.contains("Credits will not mint"),
+            "detail={detail}"
+        );
+        assert!(backend.guard.lock().expect("guard").stopped);
+        assert_eq!(
+            backend.guard.lock().expect("guard").mismatches_after_repush,
+            10
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn mid_run_identity_guard_skips_when_not_managed() {
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-b7-unmanaged-{}", unix_now()));
+        let backend = FahBackend::with_state_file(dir.join("fah-state.json"));
+        backend
+            .configure("username", "GOAT-Alice")
+            .expect("configure");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        backend.conn.lock().expect("conn").cmd_tx = Some(tx);
+        // managed left at false
+        let mismatch = json!({"config": {"user": "someone-else"}});
+        for _ in 0..5 {
+            backend.check_mid_run_identity(&mismatch).await;
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "unmanaged session must never enqueue"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn mid_run_identity_guard_match_resets_then_fresh_repush_on_new_mismatch() {
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-b7-reset-{}", unix_now()));
+        let backend = FahBackend::with_state_file(dir.join("fah-state.json"));
+        backend
+            .configure("username", "GOAT-Alice")
+            .expect("configure");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        backend.conn.lock().expect("conn").cmd_tx = Some(tx);
+        backend.managed.store(true, Ordering::SeqCst);
+
+        let mismatch = json!({"config": {"user": "someone-else"}});
+        let match_tree = json!({"config": {"user": "GOAT-Alice"}});
+
+        backend.check_mid_run_identity(&mismatch).await;
+        let _ = rx.try_recv().expect("first repush");
+        assert!(backend.guard.lock().expect("guard").repushed);
+
+        backend.check_mid_run_identity(&match_tree).await;
+        assert!(
+            !backend.guard.lock().expect("guard").repushed,
+            "matching tree resets guard"
+        );
+        assert_eq!(
+            backend.guard.lock().expect("guard").mismatches_after_repush,
+            0
+        );
+        assert!(!backend.guard.lock().expect("guard").stopped);
+        assert!(
+            !backend.guard.lock().expect("guard").unlink_attempted,
+            "matching tree resets the unlink-attempted flag too"
+        );
+
+        // Fresh mismatch starts a new repush cycle (patch again, not immediate pause).
+        backend.check_mid_run_identity(&mismatch).await;
+        let again = rx.try_recv().expect("fresh repush");
+        let patch = identity_config_patch(&backend.persisted.lock().expect("persisted").clone())
+            .expect("patch");
+        assert_eq!(again, vec![patch]);
+        assert!(
+            !backend.guard.lock().expect("guard").stopped,
+            "must not pause on first mismatch of a fresh cycle"
+        );
+        assert!(rx.try_recv().is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn mid_run_identity_guard_no_ops_while_unlink_in_flight() {
+        // FIX round 2: while the winning poll is inside the ~20-30s unlink, overlapping 3s status
+        // polls must neither re-push nor pause — a buffered `pause` would survive the kill/reconnect
+        // and pause the freshly-restarted client after a SUCCESSFUL unlink. Prove the overlapping
+        // call short-circuits: nothing is enqueued, and it doesn't advance/stop the guard.
+        let dir = std::env::temp_dir().join(format!("dagoat-fah-b7-inflight-{}", unix_now()));
+        let backend = FahBackend::with_state_file(dir.join("fah-state.json"));
+        backend
+            .configure("username", "GOAT-Alice")
+            .expect("configure");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        backend.conn.lock().expect("conn").cmd_tx = Some(tx);
+        backend.managed.store(true, Ordering::SeqCst);
+
+        // Simulate the state an overlapping poll would see mid-unlink: a real winning poll already
+        // set unlink_attempted (so decide_guard_action would otherwise pick Pause) and the
+        // single-flight flag is held by the in-flight owner.
+        {
+            let mut guard = backend.guard.lock().expect("guard");
+            guard.repushed = true;
+            guard.mismatches_after_repush = MID_RUN_GUARD_THRESHOLD;
+            guard.unlink_attempted = true;
+        }
+        backend.unlink_in_flight.store(true, Ordering::SeqCst);
+
+        let mismatch = json!({"info": {"account": "acct-1"}, "config": {"user": "someone-else"}});
+        backend.check_mid_run_identity(&mismatch).await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "overlapping poll must enqueue nothing (no re-push, no pause) while unlink is in flight"
+        );
+        // Guard counters unchanged — the overlapping poll returned before touching them.
+        let guard = backend.guard.lock().expect("guard");
+        assert_eq!(guard.mismatches_after_repush, MID_RUN_GUARD_THRESHOLD);
+        assert!(!guard.stopped, "must not mark the episode stopped from an overlapping poll");
+        drop(guard);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn taskkill_outcome_codes() {
         assert_eq!(taskkill_outcome(Some(0)), Ok(true)); // killed
         assert_eq!(taskkill_outcome(Some(128)), Ok(false)); // not running — idempotent success
         assert!(taskkill_outcome(Some(1)).is_err()); // e.g. access denied
         assert!(taskkill_outcome(None).is_err()); // signal-terminated / no exit code
+    }
+
+    #[test]
+    fn duplicate_unit_ids_get_unique_row_keys() {
+        // Two parallel units that resolve to the SAME id (founder bug: same project,
+        // id fallback collides) must still be two rows with distinct row_keys.
+        let tree = json!({ "units": [
+            { "id": "u-abc", "project": 18201, "wu_progress": 0.10, "state": "RUN" },
+            { "id": "u-abc", "project": 18201, "wu_progress": 0.55, "state": "RUN" },
+            { "id": "u-xyz", "project": 18202, "wu_progress": 0.20, "state": "RUN" }
+        ]});
+        let units = derive_units(&tree);
+        assert_eq!(units.len(), 3);
+        let keys: std::collections::HashSet<_> = units.iter().map(|u| u.row_key.clone()).collect();
+        assert_eq!(keys.len(), 3, "row_keys must be unique: {keys:?}");
+        assert_eq!(units[0].row_key, "u-abc");
+        assert_eq!(units[1].row_key, "u-abc#1");
+        assert_eq!(units[2].row_key, "u-xyz");
+    }
+
+    #[test]
+    fn parse_unit_reads_assignment_cause_when_present() {
+        let with = json!({ "id": "u1", "assignment": { "project": 18201, "cause": "cancer" }, "wu_progress": 0.5, "state": "RUN" });
+        let without = json!({ "id": "u2", "assignment": { "project": 18202 }, "wu_progress": 0.5, "state": "RUN" });
+        assert_eq!(parse_unit(&with).unwrap().cause.as_deref(), Some("cancer"));
+        assert_eq!(parse_unit(&without).unwrap().cause, None);
+    }
+
+    #[test]
+    fn unit_progress_carries_row_key_and_cause() {
+        let tree = json!({ "units": [
+            { "id": "u1", "assignment": { "project": 18201, "cause": "alzheimers" }, "wu_progress": 0.5, "state": "RUN" }
+        ]});
+        let units = derive_units(&tree);
+        let up = to_unit_progress(&units[0]);
+        assert_eq!(up.row_key, "u1");
+        assert_eq!(up.cause.as_deref(), Some("alzheimers"));
+    }
+
+    fn make_viz_dir(root: &Path, name: &str, frames: usize) {
+        let d = root.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("viewerTop.json"), "{\"atoms\":[]}").unwrap();
+        for i in 0..frames {
+            std::fs::write(d.join(format!("viewerFrame{i}.json")), "[]").unwrap();
+        }
+    }
+
+    #[test]
+    fn viz_selection_skips_frameless_dir_and_honors_unit_id() {
+        let root = std::env::temp_dir().join(format!("dagoat-viz-{}", unix_now()));
+        std::fs::create_dir_all(&root).unwrap();
+        make_viz_dir(&root, "unit-old-with-frames", 3);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        make_viz_dir(&root, "unit-new-frameless", 0); // newest mtime, but no frames
+
+        // Founder bug: newest dir has no frames yet — must fall back, not blank.
+        let picked = select_viz_dir(&root, None)
+            .unwrap()
+            .expect("a dir with frames");
+        assert!(picked.ends_with("unit-old-with-frames"));
+
+        // Explicit unit id targets its own dir when it has frames.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        make_viz_dir(&root, "unit-target", 1);
+        let picked = select_viz_dir(&root, Some("unit-old-with-frames"))
+            .unwrap()
+            .unwrap();
+        assert!(picked.ends_with("unit-old-with-frames"));
+
+        // Unknown / frameless unit id falls back to newest-with-frames.
+        let picked = select_viz_dir(&root, Some("unit-new-frameless"))
+            .unwrap()
+            .unwrap();
+        assert!(picked.ends_with("unit-target"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_managed_work_root_finds_legacy_portable_work() {
+        // load_fah_viz_snapshot used to hardcode FAH_WIN_PORTABLE_PREFIX only (8.5.6),
+        // missing the live 8.5.5 work tree — blank 3D preview.
+        let eng = managed_engine_dir();
+        let legacy = eng.join("fah-client_8.5.5-64bit-release").join("work");
+        let found = resolve_managed_work_root();
+        if legacy.is_dir() {
+            let f = found.expect("legacy work dir exists on this machine");
+            assert!(f.ends_with("work"), "{f:?}");
+            assert!(f.is_dir());
+        }
     }
 }

@@ -1,6 +1,6 @@
 // Pure desk-list aggregation + sell-routing logic for the Market tab
-// (multi-desk donor BuyDesk factory — docs/superpowers/specs/2026-07-13-
-// donor-buydesk-factory-multidesk-design.md §2.3). Kept dependency-free of
+// (multi-desk donor BuyDesk factory — the "Donor BuyDesk Factory + Multi-Desk
+// UI — Design" spec, §2.3). Kept dependency-free of
 // React/viem client calls so it's unit-testable without a chain connection
 // — see market.test.js. Amount math (estimated USDT payout) is NOT
 // duplicated here: Market.jsx reuses chain/format.js's quoteUsdtOut
@@ -12,11 +12,11 @@ import { decodeSession, NO_CAP, shortAddress } from "./chain/format.js";
 // and so market.test.js can pin the forbidden-vocabulary rule.
 export const POSTED_BID_COPY = "a posted buy order, not a market price — may be zero";
 export const ENROLLMENT_WARNING_COPY =
-  "Your wallet is not enrolled yet — use Enroll myself above (pays ETH gas), or ask the founder to enroll this wallet address.";
+  "Your wallet is not enrolled yet — use the Enroll myself button on this page (pays ETH gas), or ask the founder to enroll this wallet address.";
 export const HOLD_NOTICE_COPY =
-  "You never have to sell. Workers earn and hold GOAT; selling GOAT for USDT on a desk is optional.";
+  "You never have to sell. Workers hold GOAT minted for verified public-good work; selling GOAT for USDT on a desk is optional.";
 export const NOT_EXCHANGE_COPY =
-  "Each desk below is one donor's own independent, voluntary buy order — not a matching exchange or a market price.";
+  "Each desk shown here is one donor's own independent, voluntary buy order — not a matching exchange or a market price.";
 
 /// Builds one desk-list row from raw on-chain reads. `sessionRaw` is
 /// BuyDesk.currentSession()'s positional tuple (see decodeSession's doc

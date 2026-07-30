@@ -1,4 +1,4 @@
-//! `goat-worker` — short-lived, network-less payload executor (execution-isolation).
+//! `goat-worker` — short-lived, network-less payload executor (Council-6).
 //!
 //! Runs as a **separate process** under the isolation supervisor. Enforces scratch-only
 //! filesystem policy and denies network/spawn probes. Not a full OS sandbox by itself;

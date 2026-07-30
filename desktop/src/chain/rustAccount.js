@@ -2,7 +2,8 @@
 //
 // The webview never holds key material. Every signing operation is an
 // `invoke()` to a Tauri command (see the wallet_* contract in
-// docs/superpowers/specs/2026-07-13-stronghold-wallet-design.md §3.1): Rust
+// the "Password-Protected Multi-Wallet with Rust-Side Signing — Design" spec,
+// §3.1): Rust
 // decrypts the key from the Stronghold vault into its own memory, signs with
 // `alloy`, zeroizes, and returns only the signature / signed raw tx. The bytes
 // never cross the IPC bridge into JS, never appear in devtools, never in logs.

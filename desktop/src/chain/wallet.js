@@ -4,11 +4,28 @@
 //
 // The private key never enters JS — these commands only ever move names,
 // addresses, passwords (into Rust), and signatures (out of Rust). See
-// docs/superpowers/specs/2026-07-13-stronghold-wallet-design.md §3.2.
+// the "Password-Protected Multi-Wallet with Rust-Side Signing — Design" spec, §3.2.
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
 import { createRustAccount } from "./rustAccount.js";
+import { commandError } from "./errors.js";
+import { syncFahProfileForWallet } from "../walletProfiles.js";
+import { readAppState, writeAppState } from "../onboarding/appState.js";
+
+/** App-state key: last successfully unlocked wallet name (Contribute unlock popup). */
+export const LAST_WALLET_KEY = "last_wallet_name_v1";
+
+export async function loadLastWalletName() {
+  const v = await readAppState(LAST_WALLET_KEY, null);
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+export async function saveLastWalletName(name) {
+  const n = (name ?? "").trim();
+  if (!n) return false;
+  return writeAppState(LAST_WALLET_KEY, n);
+}
 
 // One-time migration: the pre-Stronghold build stored a RAW private key in
 // plaintext via the plugin-store file "wallet.dat" under "testnet_private_key".
@@ -54,10 +71,35 @@ export function importWallet(name, password, privateKeyHex) {
 /// Decrypt into an in-memory Rust signer for this session and set it active;
 /// returns { name, address }. Refreshes the active-wallet store so every tab
 /// picks up the new signer.
+///
+/// Progress is module-level (see unlock-progress store below) so the Wallet tab
+/// still shows "Unlocking…" after a tab switch remounts WalletManager mid-flight.
 export async function unlock(name, password) {
-  const meta = await invoke("wallet_unlock", { name, password });
-  await refreshActive();
-  return meta;
+  setUnlockProgress({ status: "pending", message: "", name });
+  try {
+    const meta = await invoke("wallet_unlock", { name, password });
+    await refreshActive();
+    // Remember for Contribute "Start" unlock popup (last used wallet).
+    await saveLastWalletName(meta?.name ?? name).catch(() => false);
+    // Swap live FAH identity to this wallet's GOAT-username profile (multi-wallet).
+    if (meta?.address) {
+      const wallets = await listWallets().catch(() => []);
+      await syncFahProfileForWallet(meta.address, invoke, {
+        walletCount: Array.isArray(wallets) ? wallets.length : 0,
+      }).catch(() => null);
+    }
+    const addr = meta?.address ?? "";
+    const short = addr.length > 10 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr;
+    setUnlockProgress({
+      status: "success",
+      message: short ? `Unlocked ${short}.` : "Unlocked.",
+      name: meta?.name ?? name,
+    });
+    return meta;
+  } catch (err) {
+    setUnlockProgress({ status: "error", message: commandError(err), name });
+    throw err;
+  }
 }
 
 /// Drop + zeroize all in-memory signers; no active wallet afterwards.
@@ -76,6 +118,44 @@ export function activeWallet() {
 export async function removeWallet(name, password) {
   await invoke("wallet_remove", { name, password });
   await refreshActive();
+}
+
+// ---- unlock progress (survives tab unmount) ---------------------------------
+// App.jsx only mounts the active tab, so WalletManager unmounts on every tab
+// switch. Local React state for the Unlock button would reset to "Unlock" while
+// wallet_unlock is still running. This store keeps pending/success/error across
+// remounts (password stays in the caller's closure — never stored here).
+
+/** @type {{ status: "idle" | "pending" | "success" | "error", message: string, name: string | null }} */
+let unlockProgress = { status: "idle", message: "", name: null };
+const unlockProgressListeners = new Set();
+
+function setUnlockProgress(next) {
+  unlockProgress = next;
+  for (const listener of unlockProgressListeners) listener();
+}
+
+function subscribeUnlockProgress(callback) {
+  unlockProgressListeners.add(callback);
+  return () => unlockProgressListeners.delete(callback);
+}
+
+function getUnlockProgressSnapshot() {
+  return unlockProgress;
+}
+
+/** Current unlock UI progress — for tests and non-React callers. */
+export function getUnlockProgress() {
+  return unlockProgress;
+}
+
+/** React hook: unlock button/progress state that survives Wallet tab remount. */
+export function useUnlockProgress() {
+  return useSyncExternalStore(
+    subscribeUnlockProgress,
+    getUnlockProgressSnapshot,
+    () => ({ status: "idle", message: "", name: null }),
+  );
 }
 
 // ---- active-wallet store (cross-tab reactive) -------------------------------

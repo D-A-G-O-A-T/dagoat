@@ -1,13 +1,23 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { DEFAULT_NETWORK_ID, NETWORKS, getNetwork } from "../chain/addresses.js";
+import {
+  DEFAULT_NETWORK_ID,
+  getNetwork,
+  visibleNetworks,
+} from "../chain/addresses.js";
 
 const STORAGE_KEY = "goat-desktop:network-id";
 
 const NetworkContext = createContext(null);
 
 function readStoredNetworkId() {
-  const stored = Number(window.localStorage.getItem(STORAGE_KEY));
-  return NETWORKS.some((n) => n.id === stored) ? stored : DEFAULT_NETWORK_ID;
+  const visible = visibleNetworks();
+  const stored = Number(
+    typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : NaN,
+  );
+  if (visible.some((n) => n.id === stored)) return stored;
+  // Stored anvil while pilot hide-anvil is on → fall through to default.
+  if (visible.some((n) => n.id === DEFAULT_NETWORK_ID)) return DEFAULT_NETWORK_ID;
+  return visible[0]?.id ?? DEFAULT_NETWORK_ID;
 }
 
 /// Wrap the app in this once; any descendant can call useNetwork() to read
@@ -15,14 +25,30 @@ function readStoredNetworkId() {
 /// it. Selection is persisted to localStorage.
 export function NetworkProvider({ children }) {
   const [networkId, setNetworkId] = useState(readStoredNetworkId);
+  const visible = useMemo(() => visibleNetworks(), []);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, String(networkId));
+    // If pilot build hides anvil, snap off a stale stored 31337.
+    if (!visible.some((n) => n.id === networkId)) {
+      const next = visible[0]?.id ?? DEFAULT_NETWORK_ID;
+      setNetworkId(next);
+    }
+  }, [visible, networkId]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(STORAGE_KEY, String(networkId));
+    }
   }, [networkId]);
 
   const value = useMemo(
-    () => ({ networkId, network: getNetwork(networkId), setNetworkId }),
-    [networkId]
+    () => ({
+      networkId,
+      network: getNetwork(networkId),
+      setNetworkId,
+      visibleNetworks: visible,
+    }),
+    [networkId, visible],
   );
 
   return <NetworkContext.Provider value={value}>{children}</NetworkContext.Provider>;
@@ -34,14 +60,14 @@ export function useNetwork() {
   return ctx;
 }
 
-/// anvil | Base Sepolia toggle. Intentionally offers only the two networks
-/// in NETWORKS — never add a mainnet option here.
+/// anvil | Base Sepolia toggle. Pilot builds (VITE_PILOT / VITE_HIDE_ANVIL)
+/// omit anvil so volunteers cannot select a dead local chain.
 export default function NetworkSwitch() {
-  const { networkId, setNetworkId } = useNetwork();
+  const { networkId, setNetworkId, visibleNetworks: networks } = useNetwork();
 
   return (
     <div className="network-switch" role="group" aria-label="Network">
-      {NETWORKS.map((n) => (
+      {networks.map((n) => (
         <button
           key={n.id}
           type="button"

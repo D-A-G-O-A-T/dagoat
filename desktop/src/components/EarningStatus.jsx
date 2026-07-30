@@ -1,10 +1,12 @@
 // Pilot attribution status (Phase 4 T12): on-chain bind/enroll + baseline watermark.
 // Honesty: no present-tense "you are earning GOAT" — TARGET/pilot/testnet language only.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { animate } from "motion";
+import { useReducedMotion } from "motion/react";
 import { getDeployment } from "../chain/addresses.js";
 import { getPublicClient, getWalletClient } from "../chain/client.js";
 import { EPOCH_SETTLEMENT_ABI } from "../chain/abis.js";
-import { formatGoat } from "../chain/format.js";
+import { formatGoat, shortAddress } from "../chain/format.js";
 import {
   RELAYER_URL,
   bindAndEnrollAuto,
@@ -13,8 +15,12 @@ import {
   relayerMode,
   usernameMismatch,
 } from "../chain/attribution.js";
+import { PASSKEY_ATTRIBUTION_NOTE } from "../onboarding/copy.js";
+import { bindTimeoutHint, rpcUnreachableHint } from "../chain/errors.js";
+import { useMountedRef } from "../lib/useMountedRef.js";
 
-const POLL_MS = 15_000;
+// Stream C T5: slower poll on public RPC (was 15s). In-flight guard skips overlap.
+export const POLL_MS = 25_000;
 const PENDING_KEY = "goat-desktop:bind-enroll-pending";
 /** In-flight bind must finish or fail within this window (relayer/RPC hang). */
 const BIND_TIMEOUT_MS = 45_000;
@@ -68,19 +74,10 @@ function errMessage(err) {
   return err.message || String(err);
 }
 
-function withTimeout(promise, ms, label) {
+function withTimeout(promise, ms, { networkId = 31337, localRelayer = true } = {}) {
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(
-          new Error(
-            `${label} timed out after ${Math.round(ms / 1000)}s. ` +
-              `Check anvil (:8545) and relayer (:8787), then click Bind again.`,
-          ),
-        ),
-      ms,
-    );
+    timer = setTimeout(() => reject(new Error(bindTimeoutHint(ms, networkId, localRelayer))), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
@@ -115,14 +112,83 @@ export async function readKeeperFeeSafe(publicClient, epochSettlementAddress) {
   }
 }
 
+/** Bind/enroll UI appears ONLY when action is needed (spec §7). */
+export function attributionViewModel({ bound, enrolled, usernameMismatch }) {
+  return { needsAction: !bound || !enrolled || Boolean(usernameMismatch) };
+}
+
+/** T27 P4: masked-by-default passkey readout. Purely local toggle state — no invoke,
+ *  no password gate (founder: "no need to encrypt this key"). Reuses the RevealKeyRow
+ *  interaction pattern (button-styled value, click to reveal/hide). */
+function MaskedPasskey({ value }) {
+  const [revealed, setRevealed] = useState(false);
+  if (!value) return "Not set";
+  return (
+    <button
+      type="button"
+      className="reveal-key-row__value"
+      onClick={() => setRevealed((v) => !v)}
+      title={revealed ? "Click to hide" : "Click to reveal"}
+    >
+      {revealed ? <code>{value}</code> : <span aria-label="hidden">••••••••</span>}
+    </button>
+  );
+}
+
+// Same honest credit-lag copy as tabs/Miner.jsx's CREDIT_LAG_NOTE (kept as a local literal here —
+// not imported — so this component never depends on tabs/, which would create components/ ↔
+// tabs/ circular imports since Miner.jsx renders EarningStatus).
+const PENDING_CREDIT_LAG_NOTE =
+  "Credited work units come from Folding@home's public stats and can lag hours behind a unit " +
+  "finishing on your machine. GOAT is not automatic — pilot mint is a testnet TARGET after bind, " +
+  "enroll, and a finalized epoch (not live mainnet earnings).";
+
+/** Animates a numeric readout between chain-state snapshots; honest values only — no invented
+ *  numbers are ever passed in. Skips the tween under reduced motion (renders the target value). */
+function CountUp({ value, decimals = 0 }) {
+  const reduced = useReducedMotion();
+  const [shown, setShown] = useState(value);
+  useEffect(() => {
+    if (reduced) {
+      setShown(value);
+      return;
+    }
+    const controls = animate(shown, value, {
+      duration: 0.6,
+      ease: "easeInOut",
+      onUpdate: (v) => setShown(v),
+    });
+    return () => controls.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, reduced]);
+  return <>{shown.toFixed(decimals)}</>;
+}
+
 /**
  * @param {object} props
  * @param {number} props.networkId
  * @param {import('viem').Account | null} props.account — Rust-backed viem account
  * @param {string | null} props.walletAddress
  * @param {string | null} props.fahUsername — local FAH identity username
+ * @param {string | null} [props.fahPasskey] — local FAH identity passkey value (A2, read-only display)
+ * @param {boolean} [props.connected] — Miner's live backend-connected flag (gates Check for accepted work)
+ * @param {Array} [props.pendingUnits] — journal units not yet minted (Task 17)
+ * @param {() => Promise<void>} [props.onCheckWork] — poll for newly accepted work (Task 17)
+ * @param {boolean} [props.checking] — Miner's in-flight flag for onCheckWork (busy label/disable)
+ * @param {string} [props.checkError] — Miner's check-completions error (surfaced verbatim)
  */
-export default function EarningStatus({ networkId, account, walletAddress, fahUsername }) {
+export default function EarningStatus({
+  networkId,
+  account,
+  walletAddress,
+  fahUsername,
+  fahPasskey = null,
+  connected = false,
+  pendingUnits = [],
+  onCheckWork,
+  checking = false,
+  checkError = "",
+}) {
   const deployment = getDeployment(networkId);
   const hasContracts = Boolean(
     deployment?.workerBinding && deployment?.epochSettlement && deployment?.enrollmentRegistry,
@@ -163,18 +229,47 @@ export default function EarningStatus({ networkId, account, walletAddress, fahUs
   const [acting, setActing] = useState(false);
   // Auto-bind once per wallet+username until success or explicit error handled.
   const autoKeyRef = useRef("");
+  /** Stream C T5: skip overlapping status polls. */
+  const refreshInflight = useRef(false);
+  /** Consultant hazard: do not setState after unmount. */
+  const mounted = useMountedRef();
+
+  // Zone 1 wallet-address copy affordance — copies the FULL address even though the grid shows
+  // a truncated one.
+  const [addressCopied, setAddressCopied] = useState(false);
+  const handleCopyAddress = useCallback(() => {
+    if (!walletAddress || typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      return;
+    }
+    navigator.clipboard.writeText(walletAddress).then(
+      () => {
+        setAddressCopied(true);
+        setTimeout(() => setAddressCopied(false), 1500);
+      },
+      () => {
+        /* clipboard denied — non-fatal, address is still shown truncated */
+      },
+    );
+  }, [walletAddress]);
 
   const refresh = useCallback(async () => {
     if (!publicClient || !walletAddress || !hasContracts) {
-      setStatus(null);
-      setKeeperFee(0n);
+      if (mounted.current) {
+        setStatus(null);
+        setKeeperFee(0n);
+      }
       return;
     }
-    // Fire-and-forget: never awaited, never touches loadError/loading — the
-    // bind/enroll status path below must not be blocked by the fee read.
-    readKeeperFeeSafe(publicClient, deployment?.epochSettlement).then(setKeeperFee);
-    setLoading(true);
-    setLoadError("");
+    if (refreshInflight.current) return;
+    refreshInflight.current = true;
+    // Fire-and-forget fee read — only apply if still mounted.
+    readKeeperFeeSafe(publicClient, deployment?.epochSettlement).then((fee) => {
+      if (mounted.current) setKeeperFee(fee);
+    });
+    if (mounted.current) {
+      setLoading(true);
+      setLoadError("");
+    }
     try {
       const snap = await readEarningStatus(publicClient, {
         workerBinding: deployment.workerBinding,
@@ -182,6 +277,7 @@ export default function EarningStatus({ networkId, account, walletAddress, fahUs
         enrollmentRegistry: deployment.enrollmentRegistry,
         wallet: walletAddress,
       });
+      if (!mounted.current) return;
       setStatus(snap);
       if (snap.bound && snap.enrolled) {
         savePendingLocal(null);
@@ -192,11 +288,12 @@ export default function EarningStatus({ networkId, account, walletAddress, fahUs
         );
       }
     } catch (err) {
-      setLoadError(errMessage(err));
+      if (mounted.current) setLoadError(errMessage(err));
     } finally {
-      setLoading(false);
+      refreshInflight.current = false;
+      if (mounted.current) setLoading(false);
     }
-  }, [publicClient, walletAddress, hasContracts, deployment]);
+  }, [publicClient, walletAddress, hasContracts, deployment, mounted]);
 
   useEffect(() => {
     refresh();
@@ -224,7 +321,7 @@ export default function EarningStatus({ networkId, account, walletAddress, fahUs
         phase: "error",
         bindTx: null,
         enrollTx: null,
-        error: "Unlock Rookie in Wallet first, then Bind & enroll again.",
+        error: "Unlock a wallet in Wallet first, then Bind & enroll again.",
         mode: "",
       });
       return;
@@ -234,7 +331,10 @@ export default function EarningStatus({ networkId, account, walletAddress, fahUs
         phase: "error",
         bindTx: null,
         enrollTx: null,
-        error: "No wallet client — unlock Rookie and confirm network is Local anvil (31337).",
+        error:
+          Number(networkId) === 31337
+            ? "No wallet client — unlock this wallet and confirm network is Local anvil (31337)."
+            : "No wallet client — unlock this wallet and confirm the pilot network is selected.",
         mode: "",
       });
       return;
@@ -273,7 +373,7 @@ export default function EarningStatus({ networkId, account, walletAddress, fahUs
           wallet: walletAddress,
         }),
         BIND_TIMEOUT_MS,
-        "Bind & enroll",
+        { networkId, localRelayer: isLocalRelayerUrl(RELAYER_URL) },
       );
       if (!bind.ok) {
         const next = {
@@ -317,8 +417,12 @@ export default function EarningStatus({ networkId, account, walletAddress, fahUs
       await refresh();
     } catch (err) {
       const raw = errMessage(err);
-      const friendly = /failed to fetch|http request failed/i.test(raw)
-        ? `Anvil RPC unreachable (http://127.0.0.1:8545). Start anvil, then re-run contracts/dev-up.ps1 if needed, restart the desktop app, unlock Rookie, Bind again. Raw: ${raw.slice(0, 180)}`
+      const rpcHint = rpcUnreachableHint(
+        { message: raw, name: /timeout|failed to fetch|http request failed/i.test(raw) ? "TimeoutError" : "Error" },
+        networkId,
+      );
+      const friendly = rpcHint
+        ? `${rpcHint} Raw: ${raw.slice(0, 180)}`
         : raw;
       const next = {
         phase: "error",
@@ -404,12 +508,75 @@ export default function EarningStatus({ networkId, account, walletAddress, fahUs
   const canBind =
     Boolean(account && walletAddress && fahUsername?.startsWith("GOAT-")) &&
     !(status?.bound && status?.enrolled);
+  const viewModel = attributionViewModel({
+    bound: Boolean(status?.bound),
+    enrolled: Boolean(status?.enrolled),
+    usernameMismatch: mismatch,
+  });
+  // Honest numeric readouts (spec §7 amendment) — GOAT-decimal-converted lastClaimedCumulative
+  // and the local pending-journal count. Never a live "claimable" figure; 0 until a baseline
+  // actually exists on chain.
+  const claimedGoat = status?.hasBaseline ? Number(formatGoat(status.lastClaimedCumulative)) : 0;
 
   return (
-    <div className="wallet-section earning-status">
+    <>
+      {walletAddress && (
+        <div className="glass stat-box">
+          <div className="stat-box__grid">
+            {/* T27 P5+P6 row layout: row 1 = username + team; row 2 = passkey (full);
+                row 3 = bound wallet (full); row 4 = claimed + pending. */}
+            <div>
+              <p className="stat-box__label">FAH username</p>
+              <p className="stat-box__value">{fahUsername?.trim() || "— not set —"}</p>
+            </div>
+            <div>
+              <p className="stat-box__label">Team · locked</p>
+              <p className="stat-box__value">Goat Project - id: 1068318</p>
+            </div>
+            <div className="stat-box__item--full">
+              <p className="stat-box__label">FAH passkey</p>
+              <p className="stat-box__value">
+                <MaskedPasskey value={fahPasskey} />
+              </p>
+            </div>
+            <div className="stat-box__item--full">
+              <p className="stat-box__label">Bound wallet</p>
+              <p className="stat-box__value">
+                <button
+                  type="button"
+                  className="attr-copy-addr"
+                  title="Click to copy"
+                  onClick={handleCopyAddress}
+                >
+                  {shortAddress(walletAddress)}
+                </button>
+                {addressCopied && <span className="muted"> copied</span>}
+              </p>
+            </div>
+            <div>
+              <p className="stat-box__label">Claimed so far · testnet</p>
+              <p className="stat-box__value">
+                <CountUp value={claimedGoat} decimals={2} /> GOAT
+              </p>
+            </div>
+            <div>
+              <p className="stat-box__label">Pending · awaiting settlement</p>
+              <p className="stat-box__value">
+                <CountUp value={pendingUnits.length} /> units
+              </p>
+            </div>
+          </div>
+          <p className="muted">{PASSKEY_ATTRIBUTION_NOTE}</p>
+          <p className="muted">
+            Claim when an epoch is finalized by the attestor — no live public FAH score in this UI;
+            never invents a claimable amount.
+          </p>
+        </div>
+      )}
+      <div className="wallet-section earning-status">
       <div className="wallet-section-header">
         <h3>Attribution (pilot / testnet)</h3>
-        <button type="button" onClick={refresh} disabled={loading || !walletAddress}>
+        <button type="button" className="btn-outline" onClick={refresh} disabled={loading || !walletAddress}>
           {loading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
@@ -419,107 +586,12 @@ export default function EarningStatus({ networkId, account, walletAddress, fahUs
         GOAT on-chain. This panel shows binding status only — it does not claim you are earning now.
       </p>
 
-      <p className="muted">
-        Relayer: <code>{RELAYER_URL}</code>{" "}
-        <span className="muted">({relayerMode(RELAYER_URL)})</span>
-        {deployment?.workerBinding && (
-          <>
-            {" "}
-            · WorkerBinding <code>{String(deployment.workerBinding).slice(0, 10)}…</code>
-          </>
-        )}
-      </p>
-      {isLocalRelayerUrl(RELAYER_URL) && (
-        <p className="status-warn" role="status">
-          Local-dev relayer (127.0.0.1 / localhost). Gasless bind needs{" "}
-          <code>goat-attestor serve-relayer</code> on :8787 (leave it running). New wallets start with{" "}
-          <strong>0 ETH</strong> — MockUSDT faucet is not gas. If you see &quot;exceeds the balance&quot;,
-          either start the relayer or fund a little anvil ETH to this wallet. Do not import the
-          RELAYER key as Rookie.
-        </p>
-      )}
-
       {!walletAddress ? (
         <p className="status-warn">Unlock a wallet in Wallet to bind &amp; enroll.</p>
       ) : (
         <>
-          <dl className="balance-grid">
-            <dt>FAH username (local)</dt>
-            <dd>{fahUsername?.trim() || "— not set —"}</dd>
-            <dt>Bound username (chain)</dt>
-            <dd>
-              {status?.bound
-                ? status.username || "—"
-                : status
-                  ? "not bound"
-                  : loadError
-                    ? "—"
-                    : "…"}
-            </dd>
-            <dt>Enrolled</dt>
-            <dd>{status ? (status.enrolled ? "yes" : "no") : "…"}</dd>
-            <dt>Baseline (hasBaseline)</dt>
-            <dd>{status ? (status.hasBaseline ? "yes" : "not yet") : "…"}</dd>
-            <dt>lastClaimedCumulative</dt>
-            <dd>
-              {status
-                ? status.hasBaseline
-                  ? String(status.lastClaimedCumulative)
-                  : "— (set on first claim / enrollment epoch)"
-                : "…"}
-            </dd>
-            <dt>Claimable</dt>
-            <dd className="muted">
-              Claim when an epoch is finalized by the attestor — no live public FAH score in this UI;
-              never invents a claimable amount.
-            </dd>
-          </dl>
-
-          {feeDisclosure && <p className="muted">{feeDisclosure}</p>}
-
-          {mismatch && (
-            <p className="error-text" role="alert">
-              Local FAH username does not match the on-chain binding — pilot attribution is paused
-              until they match.
-            </p>
-          )}
-
           {loadError && <p className="error-text">{loadError}</p>}
 
-          {canBind && (
-            <div className="wallet-actions-row">
-              <button
-                type="button"
-                className="primary-cta"
-                disabled={acting || !account}
-                onClick={handleBindAndEnroll}
-              >
-                {acting ? "Binding…" : "Bind & enroll (gasless, or ETH if relayer down)"}
-              </button>
-              {(acting || actionState.phase === "pending" || actionState.phase === "error") && (
-                <button type="button" onClick={clearStuckPending} disabled={false}>
-                  {acting ? "Cancel wait" : "Clear & retry"}
-                </button>
-              )}
-            </div>
-          )}
-
-          {acting && (
-            <p className="status-warn">
-              Pending bind/enroll submission… (times out at {BIND_TIMEOUT_MS / 1000}s if stuck)
-            </p>
-          )}
-          {!acting && actionState.phase === "pending" && (
-            <p className="status-warn">
-              Previous attempt was interrupted. Click <strong>Clear &amp; retry</strong>, then Bind
-              again.
-            </p>
-          )}
-          {actionState.phase === "error" && actionState.error && (
-            <p className="error-text" role="alert">
-              {actionState.error}
-            </p>
-          )}
           {actionState.phase === "done" && status?.bound && status?.enrolled && (
             <p className="status-ok">
               Bound &amp; enrolled on testnet
@@ -527,14 +599,163 @@ export default function EarningStatus({ networkId, account, walletAddress, fahUs
               epochs (TARGET).
             </p>
           )}
-          {!fahUsername?.startsWith("GOAT-") && (
-            <p className="muted">
-              Set FAH username under Contribute (GOAT-…) — bind &amp; enroll runs automatically once
-              a wallet is unlocked.
-            </p>
+
+          {/* Zone 2: action zone — renders ONLY when attributionViewModel says something needs
+              attention (spec §7). */}
+          {viewModel.needsAction && (
+            <>
+              {mismatch && (
+                <p className="error-text" role="alert">
+                  Local FAH username does not match the on-chain binding — pilot attribution is
+                  paused until they match.
+                </p>
+              )}
+
+              {canBind && (
+                <div className="wallet-actions-row">
+                  <button
+                    type="button"
+                    className="btn-outline"
+                    disabled={acting || !account}
+                    onClick={handleBindAndEnroll}
+                  >
+                    {acting ? "Binding…" : "Bind & enroll (gasless, or ETH if relayer down)"}
+                  </button>
+                  {(acting || actionState.phase === "pending" || actionState.phase === "error") && (
+                    <button type="button" className="btn-outline" onClick={clearStuckPending} disabled={false}>
+                      {acting ? "Cancel wait" : "Clear & retry"}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {acting && (
+                <p className="status-warn">
+                  Pending bind/enroll submission… (times out at {BIND_TIMEOUT_MS / 1000}s if stuck)
+                </p>
+              )}
+              {!acting && actionState.phase === "pending" && (
+                <p className="status-warn">
+                  Previous attempt was interrupted. Click <strong>Clear &amp; retry</strong>, then
+                  Bind again.
+                </p>
+              )}
+              {actionState.phase === "error" && actionState.error && (
+                <p className="error-text" role="alert">
+                  {actionState.error}
+                </p>
+              )}
+              {!fahUsername?.startsWith("GOAT-") && (
+                <p className="muted">
+                  Set FAH username under Contribute (GOAT-…) — bind &amp; enroll runs automatically
+                  once a wallet is unlocked.
+                </p>
+              )}
+            </>
           )}
+
+          {/* Zone 3: everything developer-ish, closed by default (spec §7). */}
+          <details className="tech-details">
+            <summary>Technical details</summary>
+
+            <dl className="balance-grid">
+              <dt>FAH username (local)</dt>
+              <dd>{fahUsername?.trim() || "— not set —"}</dd>
+              <dt>Bound username (chain)</dt>
+              <dd>
+                {status?.bound
+                  ? status.username || "—"
+                  : status
+                    ? "not bound"
+                    : loadError
+                      ? "—"
+                      : "…"}
+              </dd>
+              <dt>Enrolled</dt>
+              <dd>{status ? (status.enrolled ? "yes" : "no") : "…"}</dd>
+              <dt>Baseline (hasBaseline)</dt>
+              <dd>{status ? (status.hasBaseline ? "yes" : "not yet") : "…"}</dd>
+              <dt>lastClaimedCumulative</dt>
+              <dd>
+                {status
+                  ? status.hasBaseline
+                    ? String(status.lastClaimedCumulative)
+                    : "— (set on first claim / enrollment epoch)"
+                  : "…"}
+              </dd>
+            </dl>
+
+            <p className="muted">
+              Relayer: <code>{RELAYER_URL}</code>{" "}
+              <span className="muted">({relayerMode(RELAYER_URL)})</span>
+              {deployment?.workerBinding && (
+                <>
+                  {" "}
+                  · WorkerBinding <code>{String(deployment.workerBinding).slice(0, 10)}…</code>
+                </>
+              )}
+            </p>
+            {isLocalRelayerUrl(RELAYER_URL) && (
+              <p className="status-warn" role="status">
+                Local-dev relayer (127.0.0.1 / localhost). Gasless bind needs{" "}
+                <code>goat-attestor serve-relayer</code> on :8787 (leave it running). New wallets
+                start with <strong>0 ETH</strong> — MockUSDT faucet is not gas. If you see
+                &quot;exceeds the balance&quot;, either start the relayer or fund a little anvil ETH
+                to this wallet. Do not import the RELAYER key as Rookie.
+              </p>
+            )}
+            {feeDisclosure && <p className="muted">{feeDisclosure}</p>}
+
+            <div className="wallet-section-header">
+              <h4>Pending work units</h4>
+              <div className="wallet-actions-row">
+                <button type="button" className="btn-outline" onClick={onCheckWork} disabled={!connected || checking}>
+                  {checking ? "Checking…" : "Check for accepted work"}
+                </button>
+              </div>
+            </div>
+            {checkError && <p className="error-text">{checkError}</p>}
+            <p className="muted credit-lag-note">{PENDING_CREDIT_LAG_NOTE}</p>
+            {pendingUnits.length === 0 ? (
+              <p className="placeholder-note">
+                No pending units yet — credited work units come from Folding@home&apos;s public
+                stats and can lag hours after a unit finishes locally. Click Check for accepted
+                work to poll.
+              </p>
+            ) : (
+              <table className="pending-table">
+                <thead>
+                  <tr>
+                    <th>id</th>
+                    <th>when</th>
+                    <th>weight</th>
+                    <th>status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingUnits.map((unit) => (
+                    <tr key={unit.unit_id}>
+                      <td>
+                        <code>{unit.unit_id}</code>
+                      </td>
+                      <td>{new Date(unit.at * 1000).toLocaleString()}</td>
+                      <td>{unit.weight}</td>
+                      <td>
+                        {unit.mintedInBatch == null ? (
+                          <span className="status-warn">Pending</span>
+                        ) : (
+                          <span className="status-ok">{`Minted (batch ${unit.mintedInBatch})`}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </details>
         </>
       )}
-    </div>
+      </div>
+    </>
   );
 }

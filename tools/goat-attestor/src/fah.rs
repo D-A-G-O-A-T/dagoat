@@ -68,9 +68,8 @@ impl HttpGet for FixtureHttp {
     fn get(&self, url: &str) -> Result<(u16, String), FahError> {
         match self.map_url_to_file(url) {
             Some(path) => {
-                let body = std::fs::read_to_string(&path).map_err(|e| {
-                    FahError::Io(format!("read {}: {e}", path.display()))
-                })?;
+                let body = std::fs::read_to_string(&path)
+                    .map_err(|e| FahError::Io(format!("read {}: {e}", path.display())))?;
                 Ok((200, body))
             }
             None => Ok((404, format!("not found: {url}"))),
@@ -164,6 +163,34 @@ impl<H: HttpGet> FahClient<H> {
             }
         }
 
+        self.live_get_and_cache(username)
+    }
+
+    /// Force a live re-read, bypassing cache freshness (still subject to the
+    /// global min-interval throttle between live GETs).
+    pub fn fetch_user_fresh(&self, username: &str) -> Result<(FahUserStats, String), FahError> {
+        self.cache.lock().unwrap().remove(username);
+        self.fetch_user_with_raw(username)
+    }
+
+    /// Force a genuinely live read, bypassing BOTH the per-user cache AND the
+    /// global min-interval throttle.
+    ///
+    /// Use only at a correctness boundary where a stale (cached) score would
+    /// be unacceptable — e.g. right before committing a Merkle root on-chain.
+    /// The daily epoch id is derived from CHAIN time, which under `auto_warp`
+    /// can leap across a day boundary while real wall-clock time barely
+    /// advances; a wall-clock-keyed cache would then silently serve yesterday's
+    /// score for today's epoch (the T31 incident). One uncached read per
+    /// propose call is not "hammering" the FAH API even if a recent call
+    /// exists — it still updates the cache/metrics so later same-cycle
+    /// `fetch_user` calls benefit from this read.
+    pub fn fetch_user_uncached(&self, username: &str) -> Result<FahUserStats, FahError> {
+        let (stats, _raw) = self.live_get_and_cache(username)?;
+        Ok(stats)
+    }
+
+    fn live_get_and_cache(&self, username: &str) -> Result<(FahUserStats, String), FahError> {
         let url = self.user_url(username);
         let (status, body) = self.http.get(&url)?;
         if status != 200 {
@@ -187,12 +214,6 @@ impl<H: HttpGet> FahClient<H> {
         );
 
         Ok((stats, body))
-    }
-
-    /// Force a live re-read, bypassing cache freshness (still rate-limited).
-    pub fn fetch_user_fresh(&self, username: &str) -> Result<(FahUserStats, String), FahError> {
-        self.cache.lock().unwrap().remove(username);
-        self.fetch_user_with_raw(username)
     }
 }
 

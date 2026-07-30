@@ -77,4 +77,14 @@ contract EnrollmentRegistryTest is Test {
         reg.setEnrolled(alice, true, keccak256("kyc-alice"));
         assertEq(reg.kycRef(alice), keccak256("kyc-alice"));
     }
+
+    function test_enrollSelf_alreadyEnrolled_reverts() public {
+        vm.prank(alice);
+        reg.enrollSelf();
+        assertTrue(reg.enrolled(alice));
+
+        vm.prank(alice);
+        vm.expectRevert(EnrollmentRegistry.AlreadyEnrolled.selector);
+        reg.enrollSelf();
+    }
 }

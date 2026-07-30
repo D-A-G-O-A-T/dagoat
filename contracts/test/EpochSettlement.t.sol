@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {EnrollmentRegistry} from "../src/EnrollmentRegistry.sol";
 import {GoatCoin} from "../src/GoatCoin.sol";
 import {HoldbackEscrow} from "../src/HoldbackEscrow.sol";
@@ -39,6 +39,11 @@ contract EpochSettlementTest is Test {
         goat = new GoatCoin("GoatCoin", "GOAT", safe, reg);
         escrow = new HoldbackEscrow(safe, goat, reserve);
         binding = new WorkerBinding();
+        // Mirror production (DeployEpochSettlement): the resolver is live from construction,
+        // never a post-deploy step. FounderResolver pins its settlement immutably, so predict
+        // the settlement's CREATE address and deploy the resolver first.
+        address predictedSettle = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        resolver = new FounderResolver(founder, predictedSettle);
         settle = new EpochSettlement(
             safe,
             goat,
@@ -52,10 +57,10 @@ contract EpochSettlementTest is Test {
             WINDOW,
             PBOND,
             CBOND,
-            address(0),
+            address(resolver),
             watcher
         );
-        resolver = new FounderResolver(founder, address(settle));
+        assertEq(address(settle), predictedSettle, "CREATE address prediction drifted");
         vm.startPrank(safe);
         escrow.setVault(address(settle));
         goat.setMinter(address(settle), true);
@@ -84,6 +89,54 @@ contract EpochSettlementTest is Test {
         assertEq(settle.challengeWindow(), WINDOW);
         assertEq(settle.watcher(), watcher);
         assertEq(settle.resolver(), address(resolver));
+    }
+
+    /// CRITICAL 4: EpochSettlement is permissionless from the block it is mined — anyone can
+    /// proposeBatch immediately. If it can be constructed with resolver == address(0), the
+    /// fraud-challenge path (challengeBatch -> onDispute -> settleDispute) is inoperative for
+    /// the whole window until a manual Safe setResolver, so a fraudulent root proposed in that
+    /// window cannot be challenged and finalizes into real mints. The constructor must refuse.
+    /// Mutation: delete `|| resolver_ == address(0)` from the constructor's BadArg check.
+    function test_constructor_rejectsZeroResolver() public {
+        vm.expectRevert(EpochSettlement.BadArg.selector);
+        new EpochSettlement(
+            safe,
+            goat,
+            escrow,
+            reg,
+            binding,
+            HB_BPS,
+            BACKSTOP,
+            RATE,
+            CAP_PER_DAY,
+            WINDOW,
+            PBOND,
+            CBOND,
+            address(0),
+            watcher
+        );
+    }
+
+    /// Guards the negative test above: the exact same arguments with a non-zero resolver must
+    /// construct fine, so test_constructor_rejectsZeroResolver cannot pass for the wrong reason.
+    function test_constructor_acceptsNonZeroResolver() public {
+        EpochSettlement fresh = new EpochSettlement(
+            safe,
+            goat,
+            escrow,
+            reg,
+            binding,
+            HB_BPS,
+            BACKSTOP,
+            RATE,
+            CAP_PER_DAY,
+            WINDOW,
+            PBOND,
+            CBOND,
+            address(resolver),
+            watcher
+        );
+        assertEq(fresh.resolver(), address(resolver));
     }
 
     function test_setters_onlySafe() public {
@@ -235,6 +288,13 @@ contract EpochSettlementTest is Test {
         return l0 < l1 ? keccak256(abi.encode(l0, l1)) : keccak256(abi.encode(l1, l0));
     }
 
+    /// HoldbackEscrow jobId used by the epoch lane: one job per (epoch, worker), so no
+    /// worker's release can reach a co-worker's credit. Re-derived here rather than read
+    /// back from EpochSettlement so these tests pin the convention independently.
+    function _hbJob(uint256 epoch, address worker) internal pure returns (bytes32) {
+        return keccak256(abi.encode(epoch, worker));
+    }
+
     function test_claim_paysSplitAndAdvancesWatermark() public {
         uint256 aScore = 2_400_000;
         uint256 bScore = 600_000;
@@ -262,7 +322,7 @@ contract EpochSettlementTest is Test {
         uint256 expectHb = expectGross * HB_BPS / 10_000;
         uint256 expectLiquid = expectGross - expectHb;
         assertEq(goat.balanceOf(alice), expectLiquid);
-        assertEq(escrow.holdbackOf(bytes32(uint256(2)), alice), expectHb);
+        assertEq(escrow.holdbackOf(_hbJob(2, alice), alice), expectHb);
         assertEq(settle.lastClaimedCumulative(alice), aScore);
     }
 
@@ -380,8 +440,8 @@ contract EpochSettlementTest is Test {
         settle.claimPayout(4, alice, finalProven, empty);
         assertEq(settle.lastClaimedCumulative(alice), finalProven);
 
-        uint256 totalMinted = goat.balanceOf(alice) + escrow.holdbackOf(bytes32(uint256(2)), alice)
-            + escrow.holdbackOf(bytes32(uint256(3)), alice) + escrow.holdbackOf(bytes32(uint256(4)), alice);
+        uint256 totalMinted = goat.balanceOf(alice) + escrow.holdbackOf(_hbJob(2, alice), alice)
+            + escrow.holdbackOf(_hbJob(3, alice), alice) + escrow.holdbackOf(_hbJob(4, alice), alice);
         assertEq(totalMinted, finalProven * RATE, "no forfeiture across days");
     }
 
@@ -398,7 +458,7 @@ contract EpochSettlementTest is Test {
         _proposeFinalizeSingle(2, finalProven);
         vm.warp(uint256(settle.lastClaimTime(alice)) + 1 days);
         settle.claimPayout(2, alice, finalProven, empty);
-        uint256 afterFirst = goat.balanceOf(alice) + escrow.holdbackOf(bytes32(uint256(2)), alice);
+        uint256 afterFirst = goat.balanceOf(alice) + escrow.holdbackOf(_hbJob(2, alice), alice);
         assertEq(afterFirst, cap * RATE, "first earn claim mints exactly one day of cap");
         assertEq(settle.lastClaimedCumulative(alice), cap);
         assertTrue(settle.claimed(2, alice));
@@ -406,7 +466,7 @@ contract EpochSettlementTest is Test {
         // Loop the SAME finalized epoch — must mint nothing more.
         settle.claimPayout(2, alice, finalProven, empty);
         settle.claimPayout(2, alice, finalProven, empty);
-        uint256 afterLoop = goat.balanceOf(alice) + escrow.holdbackOf(bytes32(uint256(2)), alice);
+        uint256 afterLoop = goat.balanceOf(alice) + escrow.holdbackOf(_hbJob(2, alice), alice);
         assertEq(afterLoop, afterFirst, "same-epoch re-claims mint nothing more");
         assertEq(settle.lastClaimedCumulative(alice), cap, "watermark unchanged by the same-epoch loop");
     }
@@ -451,6 +511,103 @@ contract EpochSettlementTest is Test {
         (,,,,,,,,, EpochSettlement.Status st) = settle.batches(1);
         assertEq(uint256(st), uint256(EpochSettlement.Status.Finalized));
         assertEq(proposer.balance, pBefore + PBOND, "honest proposer bond still returned on timeout finalize");
+    }
+
+    // ---- CRITICAL 3: one worker's holdback release must not brick a co-worker's claim ----
+
+    /// jobId carried by the single `HoldbackEscrow.Credited` log emitted since the
+    /// last `vm.recordLogs()`. Read from the event rather than re-derived here, so
+    /// the lockout test below asserts BEHAVIOUR (no worker's release blocks another)
+    /// and does not silently encode whichever jobId convention is in force.
+    function _lastCreditedJobId() internal view returns (bytes32) {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics.length == 3 && logs[i].topics[0] == HoldbackEscrow.Credited.selector) {
+                return logs[i].topics[1];
+            }
+        }
+        revert("no Credited event emitted");
+    }
+
+    /// `HoldbackEscrow.credit` reverts `AlreadyReleased()` once a jobId has been
+    /// released, `releaseAfterDeadline` is permissionless, and `released` is never
+    /// cleared. So long as the epoch lane credited every worker of an epoch under one
+    /// shared jobId, the FIRST worker to collect their own holdback permanently bricked
+    /// `claimPayout` for every co-worker of that epoch who had not yet claimed:
+    /// `claimPayout` has no try/catch, so the revert propagates out of their claim.
+    ///
+    /// This drives that exact sequence — A claims, A's holdback job is released via the
+    /// permissionless path by an unrelated address, B then claims — and requires B's
+    /// claim to succeed in full. It releases the job under the id the credit ACTUALLY
+    /// used (from the log), so it reproduces the lockout against the old shared-id code
+    /// and passes only when a release genuinely cannot reach another worker's credit.
+    function test_claim_coWorkerNotLockedOutByHoldbackRelease() public {
+        bytes32[] memory empty = new bytes32[](0);
+        uint256 epoch = 3;
+
+        // Baselines for both workers (mint 0, nothing credited to escrow).
+        _proposeFinalizeSingle(1, 0);
+        settle.claimPayout(1, alice, 0, empty);
+        vm.deal(proposer, 1 ether);
+        vm.prank(proposer);
+        settle.proposeBatch{value: PBOND}(2, _leaf(bob, 0), bytes32(0));
+        _finalizeClean(2);
+        settle.claimPayout(2, bob, 0, empty);
+        assertTrue(settle.hasBaseline(bob));
+
+        // One earning epoch containing BOTH workers.
+        uint256 aScore = 2_400_000;
+        uint256 bScore = 600_000;
+        bytes32 la = _leaf(alice, aScore);
+        bytes32 lb = _leaf(bob, bScore);
+        vm.deal(proposer, 1 ether);
+        vm.prank(proposer);
+        settle.proposeBatch{value: PBOND}(epoch, _root2(la, lb), bytes32(0));
+        _finalizeClean(epoch);
+        bytes32[] memory proofA = new bytes32[](1);
+        proofA[0] = lb;
+        bytes32[] memory proofB = new bytes32[](1);
+        proofB[0] = la;
+
+        // Worker A claims. B has NOT claimed yet.
+        vm.warp(uint256(settle.lastClaimTime(alice)) + 1 days);
+        vm.recordLogs();
+        settle.claimPayout(epoch, alice, aScore, proofA);
+        bytes32 jobA = _lastCreditedJobId();
+        uint256 grossA = aScore * RATE;
+        uint256 hbA = grossA * HB_BPS / 10_000;
+        assertEq(escrow.holdbackOf(jobA, alice), hbA, "A holdback credited");
+        assertFalse(settle.claimed(epoch, bob), "B has not claimed yet");
+
+        // A's holdback is collected through the PERMISSIONLESS backstop path, by an
+        // address with no relationship to either worker.
+        vm.warp(uint256(escrow.jobDeadline(jobA)) + 1);
+        address rando = makeAddr("holdbackReleaser");
+        vm.prank(rando);
+        escrow.releaseAfterDeadline(jobA);
+        assertTrue(escrow.jobReleased(jobA), "A's holdback job released");
+        assertEq(goat.balanceOf(alice), grossA, "A now holds liquid + released holdback");
+
+        // B must still be able to claim the same epoch, in full.
+        vm.recordLogs();
+        settle.claimPayout(epoch, bob, bScore, proofB);
+        bytes32 jobB = _lastCreditedJobId();
+        uint256 grossB = bScore * RATE;
+        uint256 hbB = grossB * HB_BPS / 10_000;
+        assertEq(goat.balanceOf(bob), grossB - hbB, "B liquid paid");
+        assertEq(escrow.holdbackOf(jobB, bob), hbB, "B holdback credited, not lost");
+        assertEq(settle.lastClaimedCumulative(bob), bScore, "B watermark advanced");
+        assertFalse(escrow.jobReleased(jobB), "B's holdback job untouched by A's release");
+
+        // And the ids are per-(epoch,worker), which is WHY the above holds.
+        assertEq(jobA, keccak256(abi.encode(epoch, alice)), "A jobId is keccak(epoch, worker)");
+        assertEq(jobB, keccak256(abi.encode(epoch, bob)), "B jobId is keccak(epoch, worker)");
+        assertTrue(jobA != jobB, "co-workers of one epoch do not share a holdback job");
+
+        // B's holdback is still collectable on its own backstop.
+        vm.warp(uint256(escrow.jobDeadline(jobB)) + 1);
+        escrow.releaseAfterDeadline(jobB);
+        assertEq(goat.balanceOf(bob), grossB, "B eventually holds liquid + released holdback");
     }
 
     function test_finalize_watcherFastPathStillImmediate() public {

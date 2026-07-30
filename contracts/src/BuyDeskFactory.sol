@@ -6,7 +6,8 @@ import {GoatCoin} from "./GoatCoin.sol";
 import {EnrollmentRegistry} from "./EnrollmentRegistry.sol";
 import {BuyDesk} from "./BuyDesk.sol";
 
-/// Donor BuyDesk Factory (design 2026-07-13): "any worker becomes a donor
+/// Donor BuyDesk Factory (the "Donor BuyDesk Factory + Multi-Desk UI — Design"
+/// spec): "any worker becomes a donor
 /// anytime, from their existing wallet." A BuyDesk's `owner` receives the
 /// GOAT sold to it, so the owner only needs to be enrolled — and every
 /// worker already is. Calling `createDesk` deploys a `BuyDesk` owned by

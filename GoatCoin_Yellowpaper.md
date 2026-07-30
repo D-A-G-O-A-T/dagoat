@@ -1,10 +1,5 @@
 # The GoatCoin (GOAT) Master Protocol Specification
 
-> **Public note (2026-07-09).** This is a **protocol / engineering specification**, not a token offering
-> or marketing whitepaper. Economic figures such as historical ~$20/month idle-earnings *targets* are
-> **superseded by Vision v2.1** (Funded Public Good + No-Ponzi — see README.md (direction) and
-> RUNTIME_VS_SPEC.md / README). Capability claims must match `RUNTIME_VS_SPEC.md`.
-
 ### *The Yellowpaper — Consolidated, Authoritative Reference*
 
 > **Version 1.0 — Mainnet Specification Sealed (2026-07-06).** Parts I–VIII and Appendices A–D
@@ -17,13 +12,13 @@
 > executes Track **D1** of the Post-MVP
 > Roadmap: it consolidates the fragmented Phase-3 design record — the guidance pack, the
 > reference-implementation findings, specification amendments A-* / B-* / C-* / D-*, the risk
-> register, and the Dynamic-CET oracle/settlement design (design notes 36–41) — into a single
+> register, and the Dynamic-CET oracle/settlement design (AI responses 36–41) — into a single
 > authoritative specification. Where a mechanism has been implemented in `goatcoin-rs`, this
 > document is descriptive of shipped behavior; where a mechanism is Phase-3 design (the settlement
 > and oracle layers), it is marked **[design]**. Nothing here changes a specification; it records
 > the current, hardened state.
 >
-> **Naming.** Formal name **GoatCoin (GOAT)**; network brand **D.A. G.O.A.T.**; the familiar,
+> **Naming.** Formal name **GoatCoin (GOAT)**; consumer/UI brand **Da Goat**; the familiar,
 > relatable hook **GPUCoin**; the work unit **GCU = Goat Compute Unit**. These are used
 > consistently throughout.
 >
@@ -148,12 +143,10 @@
 
 ## 1. The Golden Goal
 
-GoatCoin turns the **idle, sunk-cost compute capacity** already sitting in ordinary households
-worldwide — unused while its owner sleeps, works, or is otherwise away — into **verified, useful
-public-good compute.** *(Vision v2.1: the purpose is **sustainable value from otherwise-wasted idle
-capacity**, funded by real external value under the **No-Ponzi Invariant / Funded Public Good** model
-— **not** maximizing per-machine profit and **not** promising a monetary yield. Contributor reward
-flows only from verified external inflow; see README.md (direction) and RUNTIME_VS_SPEC.md / README.)*
+GoatCoin exists to **maximize the real, sustained profitability of idle consumer compute
+hardware** — the sunk-cost capacity that already exists in ordinary households worldwide and that
+sits unused during the hours its owner is asleep, at work, or otherwise not using it. The network
+converts that latent capacity into verified, useful AI compute and pays its owner for it.
 
 The emphasis on *idle* and *consumer* is not incidental; it is the entire thesis. A design that
 merely paid for compute would be won by whoever could deploy the most compute most cheaply — an
@@ -162,11 +155,11 @@ is a dispersed individual contributing hardware they already own, and the party 
 *unable* to profit is an entity deploying fresh capital to build dedicated capacity to farm the
 network. Every mechanism in this document serves, directly or indirectly, that inversion.
 
-**Historical note (superseded by Vision v2.1).** Earlier drafts set a concrete north-star of
-~$20/month real earnings for ~8 h/day of idle contribution. **v2.1 retires this as a monetary
-target** — a guaranteed yield is exactly the emissions death-spiral the No-Ponzi Invariant forbids.
-Contributor value is now a *modest, externally-funded reward plus non-monetary participation
-(game / status)*, and may be near-zero when no external inflow exists. **There is no promised $/month.**
+The concrete north-star target (from the guidance pack, subject to F5 calibration): a mid-range
+consumer machine contributing ~8 hours of genuine idle time per day should be able to earn the
+real (inflation-adjusted) equivalent of ~$20/month in 2026 purchasing power, measured honestly
+against local costs — not a nominal figure that evaporates after electricity and local price
+levels are accounted for.
 
 ## 2. The Thin-Pool Principle
 
@@ -1506,17 +1499,17 @@ public testnet is the corrective (Part VIII).
 # Part VII — Economics: Dynamic-CET Settlement & Oracle Layer **[design]**
 
 > **Scope.** This entire chapter is Phase-3 **[design]** — specified and mathematically hardened
-> (design notes 36–41), **not** implemented in the shipped Testnet MVP, whose ledger deliberately
+> (AI responses 36–41), **not** implemented in the shipped Testnet MVP, whose ledger deliberately
 > holds no token or reward (§22). It is the deferred settlement layer (roadmap I4). Economic
 > constants (`κ_thin`, base weights, clamp bands, decay, DA thresholds) are **[calibration]** pending
 > the F5 study. Every quantity is **pure-integer**, so a mis-posted target is a fraud proof (§3.8).
 > Fixed-point conventions (App. A): `PPM = 1_000_000` (1.0), `BP_FULL = 10_000` (100%), `MicroUsd`
 > = µUSD, `Ppm`/`Bp`/`Epoch` = `u64`/`u32`/`u64`.
 
-The economic layer answers one question honestly: *what is a fair, localized, honest wage for a unit
+The economic layer answers one question honestly: *what is a fair, localized, honest rate for a unit
 of idle compute, denominated so it holds its real value over a decade?* A static fiat peg cannot; the
-Dynamic-CET pegs the wage to live commodity-compute markets and localizes it through a
-purchasing-power basket, while the Thin-Pool coefficient (§2) keeps the wage structurally unprofitable
+Dynamic-CET pegs the gross rate to live commodity-compute markets and localizes it through a
+purchasing-power basket, while the Thin-Pool coefficient (§2) keeps the rate structurally unprofitable
 for industrial expansion.
 
 ## 27. The Dynamic Contributor Earnings Target (CET) **[design]**
@@ -1533,7 +1526,7 @@ pipeline, each stage recomputable:
   downstream sees it (§28), so no code path ever handles an un-capped gross.
 - **Monthly figure is display-only:** the familiar "8 h/day × 30 d" number is
   `CET_monthly_display = 240 × localized_target_ugcu_h`, derived *from* the already-capped per-hour
-  target purely for the *D.A. G.O.A.T.* UI — never an independent settlement path. Keeping `κ_thin` inside
+  target purely for the *Da Goat* UI — never an independent settlement path. Keeping `κ_thin` inside
   the single per-hour rate guarantees the display and settlement paths cannot disagree.
 
 ## 28. The Compute Market Index (CMI) — commodity-tier only **[design]** / **[calibration]**
@@ -1544,7 +1537,7 @@ single most important rule is a **filter**, not a formula:
 
 - **Enterprise/hyperscaler tiers are excluded.** Commercial H100/B200-class enterprise cloud rates are
   filtered out; the index reads only commodity/consumer-tier asks. This is what holds the thin-pool
-  cap intact — pegging to industrial rates would raise the wage to where industrial expansion clears.
+  cap intact — pegging to industrial rates would raise the rate to where industrial expansion clears.
 
 The thin-pool gross rate applies the unamendable coefficient `κ_thin ∈ (0,1]` up front:
 
@@ -1564,7 +1557,7 @@ a *fraction* of the commodity clearing rate, below new-hardware payback, forever
 ## 29. The Hexa-Index CPPI basket **[design]**
 
 The **Contributor Purchasing-Power Index (CPPI)** localizes the gross target through six components —
-three direct operating costs, three real-value anchors — so the wage means the same real thing in
+three direct operating costs, three real-value anchors — so the target means the same real thing in
 every region:
 
 | # | Component | Kind | Why it protects the idle contributor |
@@ -1574,7 +1567,7 @@ every region:
 | 2 | **Digital PPP / cost-of-living** | Anchor | pegs token value to local digital-goods parity |
 | 3 | **Local inflation (CPI)** | Anchor | keeps the nominal target rising with local prices between rebalances |
 | 4 | **P2P stablecoin premium** | Anchor | captures the true off-ramp rate (USDT↔local fiat) in capital-controlled economies |
-| 5 | **Local wage index** | Anchor | preserves the reward's *meaningfulness* vs. local labor |
+| 5 | **Local labor index** | Anchor | preserves the reward's *meaningfulness* vs. local labor |
 
 Each component is normalized to an index level and combined by weight:
 
@@ -1848,7 +1841,7 @@ a proxy chosen by a *fixed, recomputable rule* — never a poster's choice.
 nearest `Active` region. That is fragile in exactly the dimension the CPPI exists to correct:
 **geographic adjacency does not imply purchasing-power parity.** Adjacent sovereign regions routinely
 diverge by large factors on precisely the basket's components — electricity across a subsidy border,
-the P2P stablecoin premium across a capital-control border, wages across a development gradient.
+the P2P stablecoin premium across a capital-control border, labor across a development gradient.
 Because `index_level = value·PPM/base_ref` (§29), a divergent single-neighbor baseline propagates
 *multiplicatively* into the provisional CPPI: a too-high proxy under-pays the new region for its
 entire provisional phase (an **accessibility** failure, §1 — onboarding collapses in exactly the
@@ -2221,7 +2214,7 @@ pub fn compute_epoch_gap_fill(n_eff: u64, cet_gross: u64, u_ref: u64, m_cap: u64
 | Term | Meaning | Anti-capture property |
 |---|---|---|
 | `N_eff` | **effective** work units, clustering/F6-discounted upstream (§14–15) | a Sybil cannot inflate the gap-fill — its identities are already merged |
-| `CET_gross − u_ref` | the per-unit gap between target and realized usage revenue | when usage meets/exceeds target, the gap is 0 → **emissions vanish** (usage-funded); the excess above the target is routed by §33.1, never into the wage |
+| `CET_gross − u_ref` | the per-unit gap between target and realized usage revenue | when usage meets/exceeds target, the gap is 0 → **emissions vanish** (usage-funded); the excess above the target is routed by §33.1, never into contributor settlement |
 | `M_cap(t)` | monotone-decaying hard cap | no epoch, gap, or captured input can mint beyond the disinflation schedule |
 
 `decay_ppm`, `m_cap_floor`, and the reserve schedule are **[calibration]** (F5).
@@ -2230,7 +2223,7 @@ pub fn compute_epoch_gap_fill(n_eff: u64, cet_gross: u64, u_ref: u64, m_cap: u64
 
 <!-- PATCH 5 (Pass 6): organic surplus extraction (R-C8). §33 specified the shortfall direction
      (emissions bridge UP to the target) but was silent when usage revenue EXCEEDS the gross target.
-     An unspecified surplus either drifts the wage above thin-pool (pass-through) or becomes a
+     An unspecified surplus either drifts the effective rate above thin-pool (pass-through) or becomes a
      discretionary orchestrator margin (extraction). The surplus is now routed deterministically to
      non-attributable sinks — reserve-refill up to the genesis ceiling, burn the overflow — and
      u_ref is made a derived on-ledger quantity so it cannot be under-reported. -->
@@ -2240,7 +2233,7 @@ pub fn compute_epoch_gap_fill(n_eff: u64, cet_gross: u64, u_ref: u64, m_cap: u64
 `u_ref > CET_gross`, organic usage revenue above the gross target. Left unspecified, the surplus
 must go *somewhere*, and both defaults are failures:
 
-- **Pass-through** (contributors keep it): the effective wage tracks demand spikes above the
+- **Pass-through** (contributors keep it): the effective rate tracks demand spikes above the
   thin-pool target. Sustained high demand pushes per-unit revenue toward and past new-hardware
   payback, and the Thin-Pool Principle (§2) — the structural-loss guarantee every anti-capture
   argument in Part VI leans on — fails precisely when the network is most worth capturing. A
@@ -2274,7 +2267,7 @@ pub fn route_surplus(n_eff: u64, u_ref: u64, cet_gross: u64,
 
 | Property | Why it holds |
 |---|---|
-| **Thin-pool binds in both regimes** | under-demand: emissions bounded by the decaying cap (§33); over-demand: the wage is capped at `CET_gross` and the excess leaves the wage channel — fresh capital faces the structural loss (§2) in every market condition |
+| **Thin-pool binds in both regimes** | under-demand: emissions bounded by the decaying cap (§33); over-demand: the rate is capped at `CET_gross` and the excess leaves the contributor-settlement channel — fresh capital faces the structural loss (§2) in every market condition |
 | **Counter-cyclical, mint-free** | reserve-refill means high-demand epochs replenish the same reserve low-demand epochs draw down — extending the emission runway toward the usage-funded handoff *without minting*; bounded by `RESERVE_CEILING(t)` so the reserve is restored, never grown past its disclosed genesis cap |
 | **Non-attributable sinks ⇒ wash-trade-proof** | no participant's payoff increases with the surplus it generates: a cohort self-dealing tasks at `u_ref > CET_gross` pays the full fee and receives back at most `CET_gross`/unit — the difference leaves its control (reserve/burn). Self-generated surplus is a strict loss |
 | **Deterministic, no honeypot** | the split is a pure integer function of on-chain quantities; there is no allocator, no vote, and nothing discretionary to capture (§35) |
@@ -2360,9 +2353,9 @@ Every property is pinned to an existing invariant:
   and cannot mint beyond `M_cap(t)`/reserve. It is an emission *allocation* competing inside the bounded,
   monotone-decaying budget — not a new mint. Total exposure is `7 × base_fee ×` (fallback region-epochs),
   itself bounded by the fallback being **rare, per-region, and auto-reverting** (§19.4).
-- **Thin-pool untouched — a cost-offset, not a wage or a profit (and why R-C8 still holds).** The rebate
+- **Thin-pool untouched — a cost-offset, not contributor earnings or a profit (and why R-C8 still holds).** The rebate
   reimburses a cost the *protocol itself imposed* (the 8× penalty), returning the orchestrator to
-  neutrality; it never flows into the CET wage (§27–§28) or to contributors as reward, so the thin-pool
+  neutrality; it never flows into the CET rate (§27–§28) or to contributors as reward, so the thin-pool
   arithmetic (§2) is unaffected. It may look like it contradicts the R-C8 **non-attributable-sink** rule
   (§33.1), which forbids routing value *to its generator* — but the two are precisely distinguished:
   R-C8 forbids returning **surplus** (revenue *above* target) to its generator because that would be
@@ -2401,7 +2394,7 @@ Every oracle update is *proposed*, not final, and doubly bounded:
   anchors, so a withheld manifest cannot win by timeout.
 
 Together, §32–§34 make the economic layer as trustless-by-recomputation as the mechanism layer: only
-roots and bounds on-chain, every localized wage recomputable, every wrong post slashable, and the
+roots and bounds on-chain, every localized target recomputable, every wrong post slashable, and the
 whole thing device-agnostic and content-blind by construction (§3.3, §3.5).
 
 ---
@@ -2600,9 +2593,8 @@ Consolidated **[calibration]** index (the owning section holds the reasoning):
 | Co-movement `θ` / `probation_quarters` | 850_000 / 2 | §35.1 | shadow-mode backtests |
 | Pioneer multiplier decay / per-class budget | ~0.5% of reserve | §7.1 | **F5 economic study** |
 
-The former north-star earnings target (~$20/month real for ~8 h/day of idle, §1) is **retired as a
-monetary target by Vision v2.1** (No-Ponzi / Funded Public Good) — it was always F5-dependent, never a
-promise, and v2.1 removes the yield target entirely. The discipline: **[calibration]** never blocks mechanism
+The north-star earnings target itself (~$20/month real for ~8 h/day of genuine idle, §1) is an
+F5-validated quantity, not a promise. The discipline: **[calibration]** never blocks mechanism
 correctness — every formula above is total, integer, and fraud-provable at *any* in-band parameter
 value — it blocks only the claim that the chosen value achieves the economic goal.
 
@@ -2645,7 +2637,7 @@ that depends on it.**
   hardening and the audit clearing.
 - **Phase 3 — economic layer & broad accessibility.** Implementation of this document's Part VII
   (I4), whose design-blocking closures — R-C1, R-C2, and now R-C7/R-C8 — are met *in specification*;
-  plus the consumer surface: D.A. G.O.A.T. onboarding, earnings dashboard, electricity-cost-aware
+  plus the consumer surface: Da Goat onboarding, earnings dashboard, electricity-cost-aware
   scheduling, low-bandwidth modes. This is where the standing accessibility goal moves from
   designed-for to built.
 - **Cross-cutting:** F5 (external, slow — commissioned at Phase 1 start); the S1–S3 standing items.
@@ -2883,7 +2875,7 @@ Appendix A. Note the two distinct kappas.
 
 | Term | Meaning |
 |---|---|
-| GoatCoin (GOAT) / D.A. G.O.A.T. / GPUCoin | formal name / consumer-UI brand / familiar hook |
+| GoatCoin (GOAT) / Da Goat / GPUCoin | formal name / consumer-UI brand / familiar hook |
 | GCU | Goat Compute Unit — measured verified work; never spec-sheet (§6) |
 | PPM / BP | fixed-point scales: 1_000_000 = 1.0 / 10_000 = 100% (App. A) |
 
@@ -2950,7 +2942,7 @@ Appendix A. Note the two distinct kappas.
 | spread rule | executor sets span ≥ m clusters/ASNs — anti-capture **and** liveness (§23) |
 | pioneer multiplier | decaying, budget-capped bootstrap bonus for young classes (§7.1) |
 | registration bond | crowd-posted at class registration; refunded at `RELAX`, burned at archival-before-`RELAX` (R-C10, §32.1) |
-| CET | Contributor Earnings Target — the localized per-GCU-h wage target (§27) |
+| CET | Contributor Earnings Target — the localized per-GCU-h target rate (§27) |
 | CMI | Compute Market Index — commodity-tier clearing price only (§28) |
 | CPPI | Contributor Purchasing-Power Index — the six-component localizer (§29) |
 | Meta-Index Controller | bounded algorithmic reweighting + feed mutation (§30, §35.1) |
@@ -2959,7 +2951,7 @@ Appendix A. Note the two distinct kappas.
 | `Provisional` / `Active` | the region-onboarding states (§31.2) |
 | Genesis Basket | constitution-fixed pre-launch baseline vectors; the genesis anchor (§31.2) |
 | gap-fill / `M_cap(t)` | the emission bridge up to the CET floor / its decaying hard cap (§33) |
-| Surplus Routing Rule | wage capped at the target; excess → reserve-refill + burn (R-C8, §33.1) |
+| Surplus Routing Rule | effective rate capped at `CET_gross`; excess → reserve-refill + burn (R-C8, §33.1) |
 | `u_ref` / `N_eff` | derived per-unit usage revenue / F6-discounted effective work units (§33) |
 | challenge window | the 7-day recompute-or-slash period, DA-gated (§34) |
 | F5 study | the empirical household-distribution study gating all calibration (§37) |

@@ -16,7 +16,12 @@ import {EnrollmentRegistry} from "../src/EnrollmentRegistry.sol";
 ///
 /// Vectors regenerated with (from repo desktop/):
 ///   node --input-type=module -e '... hashTypedData(buildBindTypedData(...))'
-/// See docs/reports/2026-07-15-session-report-eip712-relayer-hardening.md
+///
+/// The substance of the session report this used to point at: the vectors are
+/// PINNED, not recomputed at test time. Regenerating them because Forge
+/// disagrees would make the parity claim circular — if a digest here stops
+/// matching, the encoding on one of the two sides changed and that is the
+/// finding, not a stale fixture.
 contract Eip712DesktopParityTest is Test {
     using ECDSA for bytes32;
 

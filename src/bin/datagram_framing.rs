@@ -1,4 +1,4 @@
-//! MTU-safe application-layer datagram chunking + bounded reassembly (MTU-chunking).
+//! MTU-safe application-layer datagram chunking + bounded reassembly (Council-4).
 //!
 //! Outer transport framing only — does **not** change frozen semantic wire structs
 //! (`HandshakeInitiation` / `HandshakeResponse` / SecureFrame bodies). Large logical
@@ -174,7 +174,7 @@ impl ReassemblyTable {
         if total_len as usize > MAX_LOGICAL_LEN || total_len == 0 {
             return Err(ReassemblyError::TooLarge);
         }
-        // reassembly-hardening / M1: frag_count MUST match total_len (blocks attacker-chosen 32-bit mask).
+        // Council-5 / M1: frag_count MUST match total_len (blocks attacker-chosen 32-bit mask).
         let expected_frags = (total_len as usize).div_ceil(MAX_CHUNK_PAYLOAD);
         if expected_frags == 0 || expected_frags > MAX_FRAGS as usize {
             return Err(ReassemblyError::TooManyFrags);
@@ -306,7 +306,7 @@ mod tests {
         );
     }
 
-    /// reassembly-hardening / M1: crafted `frag_count = 32` must return Err and never panic under
+    /// Council-5 / M1: crafted `frag_count = 32` must return Err and never panic under
     /// overflow-checks (enabled in debug/`cargo test`).
     #[test]
     fn frag_count_32_returns_err_not_panic() {

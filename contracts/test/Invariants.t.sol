@@ -70,6 +70,15 @@ contract Handler is Test {
         bytes32 id = jobIds[jobSeed % jobIds.length];
         (,, uint256 budget, uint256 minted,,,, bool closed,) = vault.jobs(id);
         if (closed) return;
+        // PRE-CONDITION. `HoldbackEscrow.credit` reverts `AlreadyReleased()`
+        // once a job has been released (HoldbackEscrow.sol:58), and
+        // `vault.mintBatch` always credits. So a release-then-mint sequence
+        // cannot succeed and the fuzzer generates it freely.
+        // Worth recording: this is the same ordering hazard the whole-branch
+        // review found by reading -- a released jobId can never be credited
+        // again -- reached here mechanically once `fail_on_revert = true`
+        // stopped discarding the revert.
+        if (escrow.jobReleased(id)) return;
         uint256 headroomUsdt = budget - vault.usdtValueCeil(minted);
         if (headroomUsdt == 0) return;
         uint256 maxGoat = headroomUsdt * 1e18 / vault.RATE();
@@ -88,6 +97,17 @@ contract Handler is Test {
         if (jobIds.length == 0) return;
         bytes32 id = jobIds[jobSeed % jobIds.length];
         if (escrow.jobReleased(id)) return;
+        // PRE-CONDITION, not a weakened assertion. `HoldbackEscrow._release`
+        // reverts `NothingCredited()` when a job has no credited workers
+        // (HoldbackEscrow.sol:102), and only `vault.mintBatch` credits them.
+        // A `createJob` -> `releaseJob` sequence therefore asks the escrow to
+        // do something no production caller would ask, and the fuzzer
+        // generates that sequence readily. This guard mirrors the one the
+        // sibling `closeJob` in this same handler already carries.
+        // Surfaced by setting `fail_on_revert = true`; before that, this revert
+        // was silently discarded on every run.
+        (,,, uint256 minted,,,,,) = vault.jobs(id);
+        if (minted == 0) return;
         vm.prank(safe);
         escrow.release(id);
     }

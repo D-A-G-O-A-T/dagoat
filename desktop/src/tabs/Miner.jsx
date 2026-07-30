@@ -1,37 +1,29 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useContributeMode } from "../contributeMode.js";
 import BackendCard from "../components/BackendCard.jsx";
 import FahPreview from "../components/FahPreview.jsx";
 import EarningStatus from "../components/EarningStatus.jsx";
-import {
-  canSubmit as canSubmitUsername,
-  fullUsername,
-  GOAT_USERNAME_PREFIX,
-  saveUsername,
-} from "../components/FirstRunUsername.jsx";
-import { useActiveWallet, useActiveAccount } from "../chain/wallet.js";
+import { useActiveWallet, useActiveAccount, listWallets } from "../chain/wallet.js";
 import { useNetwork } from "../components/NetworkSwitch.jsx";
 import { loadPending } from "../journal.js";
 import { attemptSavePending, mergeUnsaved, retryUnsaved, RETRY_INTERVAL_MS } from "../pendingRetry.js";
-import brandLockup from "../assets/brand/goat-lockup-horizontal-dark.png";
+import { createStuckTracker, selectAutoDumpUnitIds } from "../stuckUnits.js";
+import { resolveCause, fetchProjectCause } from "../causes.js";
+import { EARNING_OFF_CARD } from "../onboarding/copy.js";
+import { syncFahProfileForWallet } from "../walletProfiles.js";
+import { readBoundUsername } from "../chain/attribution.js";
+import UnlockWalletOverlay from "../components/UnlockWalletOverlay.jsx";
 
 const STATUS_POLL_MS = 3_000;
 const ENGINE_POLL_MS = 2_000;
 const COMPLETIONS_POLL_MS = 300_000;
-const POWER_LEVELS = [
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "full", label: "Full" },
-];
 
 // Exact user-facing copy for the managed controls (P3.1). Exported so tests pin the wording.
 // Stop now kills the FAH client process (A-D T5, design §C3) — it no longer finishes the unit
 // first, so this copy must never claim it "protects the science".
 export const STOP_SUBTEXT =
   "Kills the FAH client process. Folding resumes from the work unit's last checkpoint when you start again.";
-export const AUTOCONFIG_NOTE =
-  "Uses all CPU cores minus 2 and available GPUs — adjust with the power control.";
 // A Folding@home client that is linked to an FAH account ignores local resource-config commands,
 // so Goat must NOT claim it set CPU/GPU. Honest note shown instead (driven by status.linked).
 export const ACCOUNT_MANAGED_NOTE =
@@ -44,31 +36,42 @@ export const CREDIT_LAG_NOTE =
   "Credited work units come from Folding@home's public stats and can lag hours behind a unit " +
   "finishing on your machine. GOAT is not automatic — pilot mint is a testnet TARGET after bind, " +
   "enroll, and a finalized epoch (not live mainnet earnings).";
-
-export const TEAM_STATS_URL = "https://stats.foldingathome.org/team/1068318";
-/** GOAT Folding@home team id — must match fah.rs DEFAULT_TEAM. */
-export const GOAT_FAH_TEAM_ID = "1068318";
-
-/** Team brand block renders when the install folds for the GOAT team (1068318). Passkey is no
- *  longer required — team brand is honest without the retired shared secret. */
-export function showTeamBrand(identity) {
-  return identity?.team === "1068318";
-}
-
-/** Optional FAH passkey: empty (base score works) OR exactly 32 hex chars (QRB bonus). */
-export const PASSKEY_HEX_RE = /^[0-9a-fA-F]{32}$/;
-
-export function isValidPasskeyInput(raw) {
-  const v = (raw ?? "").trim();
-  return v === "" || PASSKEY_HEX_RE.test(v);
-}
-
-const FAH_BACKEND_ID = "folding_at_home";
-
-/** Job-card auto-config note: the account-managed note when the client is FAH-account-linked (it
- *  ignores local config), else the honest CPU-minus-2 + GPU note. Driven by backend status.linked. */
-export function autoConfigNote(linked) {
-  return linked ? ACCOUNT_MANAGED_NOTE : AUTOCONFIG_NOTE;
+// B6: shown (and Start blocked) when the wallet has neither a local FAH profile nor an on-chain
+// bind — folding anonymously would credit nobody, so Start routes the user to bind first.
+export const NO_FAH_IDENTITY_BLOCKED =
+  "This wallet has no GOAT-username yet. Go to the Wallet tab to bind one before contributing so your work is credited.";
+// B8: standing warning (not transient like engineDetail) — an FAH-account-linked machine can
+// silently override the GOAT username Goat just configured. B7b (RESOLVED 2026-07-19,
+// founder-directed option 3): the local fah-client's control socket still exposes no unlink
+// command (verified against fah-client-bastet source, v8.5.5/v8.5.6) — but the MANAGED portable
+// client's account link lives in GoatApp's own client.db (SQLite, under the managed engine dir),
+// which GoatApp owns outright. So GoatApp automatically clears that link (stop client → schema-
+// verified delete of exactly the account-token rows → restart → re-verify) when the account
+// overrides the wallet's GOAT username, rather than only ever telling the user to do it by hand.
+// This warning discloses that behavior IN ADVANCE (so the app never silently rewrites the
+// account relationship without prior on-screen notice) and is honest that re-linking afterward
+// still requires the user's own Folding@home web client — see AUTO_UNLINKED_NOTE for the note
+// shown after an unlink has actually happened.
+export const LINKED_ACCOUNT_WARNING =
+  "This machine is linked to a Folding@home account, which can override your GOAT username at " +
+  "any time. If that happens, GoatApp automatically unlinks this machine from that account to " +
+  "keep your contributions credited to you. Re-linking afterward requires signing in to " +
+  "Folding@home's web client.";
+// B7b (RESOLVED, option 3): honest note for after GoatApp has actually performed the automatic
+// unlink (severed the managed client's account-token in its own client.db) because the linked
+// account was overriding the wallet's GOAT username. Rendered through the same generic
+// `status.detail` panel that already surfaces backend-driven copy (Rust sets `live.detail` to
+// this same honest wording — see fah.rs `post_unlink_recovered_detail`). Kept here as an exported
+// constant purely so copy-law tests pin the canonical wording. Never implies re-linking is
+// automatic — that still requires the user's own Folding@home web client.
+export const AUTO_UNLINKED_NOTE =
+  "GoatApp automatically unlinked this machine from your Folding@home account because it was " +
+  "overriding your GOAT username. Folding continues under your GOAT identity. To re-link this " +
+  "machine, sign in to Folding@home's web client.";
+/** B4a: the honest note shown while the OLD wallet's in-flight work unit finishes after a
+ *  wallet switch, before the NEW wallet's Start is allowed. */
+export function finishingNote(oldName, newName) {
+  return `Finishing ${oldName || "the previous wallet"}'s work unit — ${newName || "the new wallet"} starts next.`;
 }
 
 /** True when the folding run is currently paused (drives the Pause↔Resume toggle). */
@@ -97,6 +100,17 @@ export function unitLooksStuck(unit) {
         ? Number(unit.progress) * 100
         : Number(unit.progress);
   return waiting && (!Number.isFinite(pct) || pct < 0.1);
+}
+
+/** Pure per-row view model: unique key (row_key fix for same-project parallel
+ *  units), friendly science label, and per-row dump gating (30 s stuck rule). */
+export function unitRowModel(unit, stuckMap, configCause = null, projectCause = null) {
+  const key = unit.row_key ?? unit.id;
+  return {
+    key,
+    causeLabel: resolveCause({ unitCause: unit.cause, projectCause, configCause }),
+    showDump: stuckMap.get(key) === true,
+  };
 }
 
 /** Single toggle label: "Resume" when paused, otherwise "Pause". */
@@ -155,6 +169,75 @@ export function isActiveStatus(status) {
   return !INACTIVE_STATES.has(String(status.state ?? "").toLowerCase());
 }
 
+/** B6: Start is blocked when the resolver found neither a local profile nor a chain bind. */
+export function shouldBlockStartForIdentity(resolvedProfile) {
+  return !resolvedProfile?.username;
+}
+
+// B4a: wallet switch sets a module-level "finishing" note (App.jsx's switch effect writes it;
+// this component may be unmounted when the switch happens since only the active tab renders —
+// mirrors wallet.js's unlockProgress external-store pattern for the same reason).
+let foldGateNote = null;
+const foldGateListeners = new Set();
+function emitFoldGate() {
+  for (const listener of foldGateListeners) listener();
+}
+export function setFoldGateNote(note) {
+  foldGateNote = note;
+  emitFoldGate();
+}
+export function clearFoldGateNote() {
+  foldGateNote = null;
+  emitFoldGate();
+}
+function subscribeFoldGate(cb) {
+  foldGateListeners.add(cb);
+  return () => foldGateListeners.delete(cb);
+}
+function getFoldGateSnapshot() {
+  return foldGateNote;
+}
+export function useFoldGateNote() {
+  return useSyncExternalStore(subscribeFoldGate, getFoldGateSnapshot, () => null);
+}
+
+/** Current fold-gate note — for tests and non-React callers (mirrors getUnlockProgress). */
+export function getFoldGateNote() {
+  return foldGateNote;
+}
+
+/** FIX-A: pure gate-lift decision — whichever (possibly cancelled) switch-effect instance set
+ *  the note, an observed non-active FAH status means folding is done and the gate must lift. */
+export function foldGateAfterStatus(note, statusActive) {
+  return statusActive ? note : null;
+}
+
+/** FIX-A: apply foldGateAfterStatus to the live store from any status observation point. This
+ *  is the authoritative clearer — Miner's status observation calls it on every snapshot, so a
+ *  stranded note (switch effect cancelled mid-poll, early-returned, or finish-rejected) can
+ *  never keep Start bricked once the client is actually idle. */
+export function applyFoldGateStatus(statusActive) {
+  const next = foldGateAfterStatus(foldGateNote, statusActive);
+  if (next !== foldGateNote) {
+    foldGateNote = next;
+    emitFoldGate();
+  }
+}
+
+/** B4/B4a wiring lives in App.jsx (only the active tab is mounted); Miner exposes this so
+ *  App.jsx can clear a stale managed-run record without reaching into Miner's own React state,
+ *  which doesn't exist while Miner is unmounted. */
+export function clearContributeSession(backendId) {
+  delete contributeSession[backendId];
+}
+
+/** Pure predicate for the App-level wallet-switch effect: only act on a real switch between two
+ *  different, non-null addresses (never on first-unlock or a lock-out). Exported so the switch
+ *  trigger gets pure-logic Vitest coverage without rendering App.jsx. */
+export function shouldGateOnWalletSwitch(prevAddress, nextAddress) {
+  return Boolean(prevAddress && nextAddress && prevAddress !== nextAddress);
+}
+
 export default function Miner() {
   const { goatPilot } = useContributeMode();
   const [catalog, setCatalog] = useState([]);
@@ -176,23 +259,34 @@ export default function Miner() {
   // FAH settings (spec §11 — attach must not override the user's client).
   const [managedRun, setManagedRun] = useState(false);
 
-  const [powerLevel, setPowerLevel] = useState("medium");
-  const [powerError, setPowerError] = useState("");
-
-  // FAH identity snapshot (username/team/passkey flags) — drives brand + username/passkey UI.
+  // FAH identity snapshot (username) — feeds EarningStatus's fahUsername prop. The username/team/
+  // passkey editors moved into the onboarding wizard (BindUsername); Contribute only reads it.
   const [identity, setIdentity] = useState(null);
-  const [usernameDraft, setUsernameDraft] = useState("");
-  const [usernameError, setUsernameError] = useState("");
-  const [usernameSaving, setUsernameSaving] = useState(false);
-  const [usernameSavedNote, setUsernameSavedNote] = useState("");
-  const [passkeyDraft, setPasskeyDraft] = useState("");
-  const [passkeyError, setPasskeyError] = useState("");
-  const [passkeySaving, setPasskeySaving] = useState(false);
-  const [passkeySavedNote, setPasskeySavedNote] = useState("");
   const [dumpBusyId, setDumpBusyId] = useState(null);
   const [dumpNote, setDumpNote] = useState("");
-  const [teamBusy, setTeamBusy] = useState(false);
-  const [teamNote, setTeamNote] = useState("");
+  // unitId → last auto-dump attempt (ms); prevents dump loops while still stuck.
+  const autoDumpAttemptRef = useRef(new Map());
+
+  // Unique-key stuck tracker (spec §7): a row is "stuck" only after >=30s continuously at 0%
+  // progress, keyed by row_key so parallel units on the same project never collide.
+  // Lazy init so createStuckTracker() runs once, not on every render.
+  const stuckTrackerRef = useRef(null);
+  if (stuckTrackerRef.current === null) stuckTrackerRef.current = createStuckTracker();
+  const stuckTracker = stuckTrackerRef.current;
+  // Project-level science-cause cache (tier 2 of resolveCause) — keyed by project id, fetched
+  // once per distinct project seen in status.units.
+  const [projectCauses, setProjectCauses] = useState({});
+  const requestedCausesRef = useRef(new Set());
+  // Component-level mounted guard for late-resolving cause fetches: the cause effect re-runs on
+  // every 3s status poll, so a per-invocation `cancelled` flag would discard in-flight results
+  // (and requestedCausesRef would then permanently block a retry). Only a real unmount cancels.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Active wallet (Rust-backed) — for bound wallet note + gasless bind/enroll.
   // Re-renders on unlock/lock/switch in the Wallet tab.
@@ -200,6 +294,12 @@ export default function Miner() {
   const walletAddress = activeWallet?.address ?? null;
   const account = useActiveAccount();
   const { networkId } = useNetwork();
+  // B4a: set by App.jsx's wallet-switch effect while the OLD wallet's in-flight unit finishes;
+  // module-scope store since this component unmounts on tab switch (see useFoldGateNote above).
+  const foldGateNote = useFoldGateNote();
+  // Earn-on + Start without unlock → password popup (defaults to last-used wallet).
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const [startAfterUnlock, setStartAfterUnlock] = useState(false);
   const [pending, setPending] = useState([]);
   const [checkError, setCheckError] = useState("");
   const [checking, setChecking] = useState(false);
@@ -212,7 +312,7 @@ export default function Miner() {
 
   const selectedEntry = catalog.find((e) => e.id === selectedId) ?? null;
 
-  // Load catalog + pending journal + wallet key on mount.
+  // Load catalog + pending journal on mount.
   useEffect(() => {
     let cancelled = false;
     invoke("catalog_list")
@@ -231,6 +331,15 @@ export default function Miner() {
       .catch(() => {
         /* store unavailable outside Tauri — leave [] */
       });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // FAH identity follows the active wallet (per-wallet GOAT-username profile). Re-read after
+  // unlock/switch so Attribution never shows Alice's Rookie while Bob is unlocked.
+  useEffect(() => {
+    let cancelled = false;
     invoke("backend_fah_identity")
       .then((snap) => {
         if (!cancelled) setIdentity(snap);
@@ -241,7 +350,7 @@ export default function Miner() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [walletAddress]);
 
   // Auto-select the first enabled catalog entry once loaded.
   useEffect(() => {
@@ -306,7 +415,12 @@ export default function Miner() {
   // user killed FAHClient -> "installed_not_connected"), tear down the managed-run UI so
   // "Start contributing" re-enables and Pause/Stop hide, instead of sticking on "Contributing".
   useEffect(() => {
-    if (status && !isActiveStatus(status)) {
+    if (!status) return;
+    const active = isActiveStatus(status);
+    // FIX-A: authoritative gate-lift — folding done / client gone means the wallet-switch fold
+    // gate lifts here, no matter which (possibly cancelled) App switch-effect set the note.
+    applyFoldGateStatus(active);
+    if (!active) {
       setConnected(false);
       setManagedRun(false);
       if (selectedId) delete contributeSession[selectedId];
@@ -336,28 +450,13 @@ export default function Miner() {
     };
   }, [selectedId, connected]);
 
-  /**
-   * Advanced external-attach: connect to a Folding@home client the user already runs, for
-   * read-only progress only. Deliberately never calls backend_start — it must not override the
-   * user's own settings (spec §11: only Start contributing applies auto-config).
-   */
-  async function handleAttachConnect() {
-    if (!selectedId) return;
-    setActionError("");
-    try {
-      await invoke("backend_connect", { id: selectedId });
-      setConnected(true);
-      setManagedRun(false);
-      contributeSession[selectedId] = { managedRun: false };
-      setEngineDetail(
-        "Attached to your Folding@home client (read-only progress; resource settings untouched — " +
-          "your saved FAH username/passkey may be applied)."
-      );
-    } catch (err) {
-      setConnected(false);
-      setActionError(errMessage(err));
-    }
-  }
+  // After unlock popup succeeds, auto-continue Start contributing once the wallet is active.
+  useEffect(() => {
+    if (!startAfterUnlock || !walletAddress || unlockOpen) return;
+    setStartAfterUnlock(false);
+    handleStartContributing();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only fire on unlock→active transition
+  }, [startAfterUnlock, walletAddress, unlockOpen]);
 
   /**
    * Primary one-click lifecycle (P3.1): ensure the engine (auto-download + launch the official
@@ -366,10 +465,48 @@ export default function Miner() {
    */
   async function handleStartContributing() {
     if (!selectedId) return;
+
+    // Earn GOAT on + no unlocked wallet → unlock popup (last used wallet pre-selected).
+    if (goatPilot && !walletAddress) {
+      setActionError("");
+      const wallets = await listWallets().catch(() => []);
+      if (!Array.isArray(wallets) || wallets.length === 0) {
+        setActionError(
+          "Earn GOAT is on but no wallet is stored. Create or import a wallet in the Wallet tab first.",
+        );
+        return;
+      }
+      setStartAfterUnlock(true);
+      setUnlockOpen(true);
+      return;
+    }
+
     setContributing(true);
     setActionError("");
     setEngineDetail("");
     try {
+      // Bind live FAH user to this wallet's GOAT-username BEFORE fold (e.g. GOAT-Bob ↔ Bob).
+      // Without this, a prior wallet's FAH user can keep folding and steal attribution.
+      if (walletAddress) {
+        setEngineDetail("Applying wallet FAH identity…");
+        const wallets = await listWallets().catch(() => []);
+        const resolved = await syncFahProfileForWallet(walletAddress, invoke, {
+          walletCount: Array.isArray(wallets) ? wallets.length : 0,
+          networkId,
+          readBoundUsername,
+        }).catch(() => null);
+        if (shouldBlockStartForIdentity(resolved)) {
+          // B6: no local profile and no chain bind — block Start rather than fold anonymously.
+          setActionError(NO_FAH_IDENTITY_BLOCKED);
+          return;
+        }
+        try {
+          const snap = await invoke("backend_fah_identity");
+          setIdentity(snap);
+        } catch {
+          /* identity readout is best-effort */
+        }
+      }
       // One-click: ensure engine (download latest if missing) → wait until API is up →
       // connect WS → start (identity/team + fold). Do not require a second click.
       let report = await invoke("backend_ensure_engine", { id: selectedId });
@@ -449,12 +586,6 @@ export default function Miner() {
               ? ACCOUNT_MANAGED_NOTE + verNote
               : `Contributing — all CPU cores minus 2 and available GPUs are folding.${verNote}`,
           );
-          try {
-            await invoke("backend_set_power", { id: selectedId, level: "full" });
-            setPowerLevel("full");
-          } catch {
-            /* non-fatal */
-          }
         }
       } else if (state === "error") {
         setActionError(report?.detail ?? "Could not provision the engine.");
@@ -528,6 +659,25 @@ export default function Miner() {
     };
   }, [connected, selectedId]);
 
+  // Tier-2 science cause (spec §7 causes.js): fetch project metadata cause once per distinct
+  // project id seen in the live unit list, so causeLabel can fall back to it when the FAH
+  // assignment itself omits `cause`. Late results are kept, not discarded: this effect re-runs
+  // on every 3s status poll, so gating on a per-invocation cleanup flag would throw away every
+  // in-flight resolution while requestedCausesRef blocked the retry. The functional
+  // setProjectCauses update is safe after later status changes; only unmount cancels.
+  useEffect(() => {
+    const ids = [...new Set((status?.units ?? []).map((u) => String(u.project ?? "")).filter(Boolean))];
+    const toFetch = ids.filter((id) => !requestedCausesRef.current.has(id));
+    if (toFetch.length === 0) return;
+    for (const id of toFetch) requestedCausesRef.current.add(id);
+    toFetch.forEach((id) => {
+      fetchProjectCause(id).then((cause) => {
+        if (!mountedRef.current || cause == null) return;
+        setProjectCauses((prev) => ({ ...prev, [id]: cause }));
+      });
+    });
+  }, [status]);
+
   const checkCompletions = useCallback(async () => {
     if (!selectedId) return;
     setChecking(true);
@@ -578,26 +728,23 @@ export default function Miner() {
     return () => clearInterval(timer);
   }, [unsavedUnits, retryUnsavedNow]);
 
-  async function handlePower(level) {
-    if (!selectedId) return;
-    setPowerError("");
-    try {
-      await invoke("backend_set_power", { id: selectedId, level });
-      setPowerLevel(level);
-    } catch (err) {
-      setPowerError(errMessage(err));
-    }
-  }
-
-  /** Dump one stuck FAH unit (official WS cmd:dump) so the client can re-assign. */
-  async function handleDumpUnit(unitId) {
+  /** Dump one stuck FAH unit (official WS cmd:dump) so the client can re-assign.
+   *  @param {string} unitId
+   *  @param {{ auto?: boolean }} [opts] auto=true when fired by the 30s stuck rule
+   */
+  async function handleDumpUnit(unitId, opts = {}) {
     if (!selectedId || !unitId) return;
+    const auto = Boolean(opts.auto);
     setDumpBusyId(unitId);
     setDumpNote("");
     setActionError("");
     try {
       await invoke("backend_dump_unit", { id: selectedId, unitId });
-      setDumpNote(`Dumped unit ${unitId.slice(0, 12)}… — FAH should re-assign. If still stuck, Pause then Dump again.`);
+      setDumpNote(
+        auto
+          ? `Auto-dumped unit ${unitId.slice(0, 12)}… (0% for ≥30s) — FAH should re-assign.`
+          : `Dumped unit ${unitId.slice(0, 12)}… — FAH should re-assign. If still stuck, Pause then Dump again.`,
+      );
       // Refresh status quickly after dump.
       try {
         const s = await invoke("backend_status", { id: selectedId });
@@ -612,132 +759,28 @@ export default function Miner() {
     }
   }
 
-  async function handleDumpAllStuck() {
-    const stuck = (status?.units ?? []).filter(unitLooksStuck);
-    if (!selectedId || stuck.length === 0) return;
-    setDumpNote("");
-    setActionError("");
-    for (const u of stuck) {
-      // Sequential dumps — FAH client is single-threaded on config/unit ops.
-      // eslint-disable-next-line no-await-in-loop
-      await handleDumpUnit(u.id);
+  // Auto-dump units stuck at 0% for ≥30s (same rule as the Dump WU button). One at a time;
+  // per-unit cooldown avoids dump loops if FAH re-queues the same id still at 0%.
+  useEffect(() => {
+    if (!connected || !selectedId || dumpBusyId) return;
+    const units = status?.units ?? [];
+    if (units.length === 0) return;
+    const now = Date.now();
+    const stuck = stuckTracker.observe(units, now);
+    // Clear cooldown marks for units that recovered (progress or gone from stuck).
+    for (const unit of units) {
+      const id = unit?.id;
+      if (!id) continue;
+      const key = unit.row_key ?? id;
+      if (stuck.get(key) !== true) autoDumpAttemptRef.current.delete(id);
     }
-    try {
-      // After dumping stuck WUs, request fold again so slots refill.
-      await invoke("backend_start", { id: selectedId });
-      setDumpNote(
-        `Dumped ${stuck.length} stuck unit(s) and re-sent fold. Watch unit states leave DOWNLOAD/ASSIGN.`,
-      );
-    } catch (err) {
-      setActionError(errMessage(err));
-    }
-  }
-
-  /** Push GOAT team 1068318 to FAH (hot-apply when connected). Account-linked clients may still
-   *  re-sync account team — change team on foldingathome.org or unlink if this doesn't stick. */
-  async function handleSetGoatTeam() {
-    if (!selectedId) return;
-    setTeamBusy(true);
-    setTeamNote("");
-    setActionError("");
-    try {
-      await invoke("backend_configure", {
-        id: selectedId,
-        key: "team",
-        value: GOAT_FAH_TEAM_ID,
-      });
-      // Re-send identity + fold so team applies without full restart.
-      if (connected) {
-        try {
-          await invoke("backend_start", { id: selectedId });
-        } catch {
-          /* configure already hot-applied identity patch */
-        }
-        const snap = await invoke("backend_status", { id: selectedId });
-        setStatus(snap);
-        const liveTeam = snap?.team != null ? String(snap.team) : "?";
-        if (liveTeam === GOAT_FAH_TEAM_ID) {
-          setTeamNote(`FAH team is now ${GOAT_FAH_TEAM_ID} (GOAT).`);
-        } else {
-          setTeamNote(
-            `Pushed GOAT team ${GOAT_FAH_TEAM_ID}; live client still reports team ${liveTeam}. ` +
-              "Account-linked machines often keep the account team — set team " +
-              `${GOAT_FAH_TEAM_ID} at foldingathome.org or unlink this machine, then Start again.`,
-          );
-        }
-      } else {
-        setTeamNote(
-          `Saved GOAT team ${GOAT_FAH_TEAM_ID}. Start contributing so the FAH client receives it.`,
-        );
-      }
-    } catch (err) {
-      setActionError(errMessage(err));
-    } finally {
-      setTeamBusy(false);
-    }
-  }
-
-  async function handleSaveUsername(e) {
-    e?.preventDefault?.();
-    // Allow typing with or without the GOAT- prefix.
-    let raw = usernameDraft.trim();
-    if (raw.toUpperCase().startsWith(GOAT_USERNAME_PREFIX.toUpperCase())) {
-      raw = raw.slice(GOAT_USERNAME_PREFIX.length);
-    }
-    if (!canSubmitUsername(raw, usernameSaving)) {
-      setUsernameError("Enter a name (letters, digits, underscore).");
-      setUsernameSavedNote("");
-      return;
-    }
-    setUsernameSaving(true);
-    setUsernameError("");
-    setUsernameSavedNote("");
-    try {
-      const saved = await saveUsername(raw);
-      const snap = await invoke("backend_fah_identity");
-      setIdentity(snap);
-      setUsernameDraft("");
-      setUsernameSavedNote(
-        `Saved FAH username ${saved}. Stop and Start contributing so ClientWeb picks it up (if a run is already live).`,
-      );
-    } catch (err) {
-      setUsernameError(errMessage(err));
-    } finally {
-      setUsernameSaving(false);
-    }
-  }
-
-  async function handleSavePasskey(e) {
-    e?.preventDefault?.();
-    const raw = passkeyDraft.trim();
-    if (!isValidPasskeyInput(raw)) {
-      setPasskeyError("Passkey must be empty or exactly 32 hex characters.");
-      setPasskeySavedNote("");
-      return;
-    }
-    setPasskeySaving(true);
-    setPasskeyError("");
-    setPasskeySavedNote("");
-    try {
-      await invoke("backend_configure", {
-        id: FAH_BACKEND_ID,
-        key: "passkey",
-        value: raw,
-      });
-      const snap = await invoke("backend_fah_identity");
-      setIdentity(snap);
-      setPasskeyDraft("");
-      setPasskeySavedNote(
-        raw
-          ? "Passkey saved for local FAH client (QRB bonus when FAH accepts it)."
-          : "Passkey cleared — base FAH score works without one.",
-      );
-    } catch (err) {
-      setPasskeyError(errMessage(err));
-    } finally {
-      setPasskeySaving(false);
-    }
-  }
+    const toDump = selectAutoDumpUnitIds(units, stuck, autoDumpAttemptRef.current, now);
+    if (toDump.length === 0) return;
+    const unitId = toDump[0];
+    autoDumpAttemptRef.current.set(unitId, now);
+    handleDumpUnit(unitId, { auto: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dump when status/stuck clock advances
+  }, [status, connected, selectedId, dumpBusyId]);
 
   const pendingForSelected = pending.filter((u) => u.backendId === selectedId);
   const engineState = String(engineReport?.state ?? installState ?? "").toLowerCase();
@@ -748,22 +791,28 @@ export default function Miner() {
     ["ready", "running", "external"].includes(engineState);
   // Actively computing right now: attached, an active (non-dead) state, and not paused.
   const foldingActive = connected && isActiveStatus(status) && !isPaused;
+  // Per-row dump gating (spec §7): row_key-keyed 30s-at-0% rule, computed fresh on every render
+  // from the live unit list.
+  const stuckMap = stuckTracker.observe(status?.units ?? [], Date.now());
 
   return (
     <section className="tab-panel miner-tab">
-      <h2>Contribute</h2>
-      <p className="muted contribute-lede">
-        One app. <strong>Start contributing</strong> downloads the official portable Folding@home
-        client when needed (no EULA installer window) then enables supported GPUs and starts
-        folding. Pause or Stop anytime. Powered by Folding@home open source. Goat does not claim a
-        GPU sandbox. GOAT pilot is optional (Mode B).
-      </p>
-
-      <div className="contribute-layout">
-        <div className="contribute-main">
+      {unlockOpen && (
+        <UnlockWalletOverlay
+          onClose={() => {
+            setUnlockOpen(false);
+            setStartAfterUnlock(false);
+          }}
+          onUnlocked={() => {
+            setUnlockOpen(false);
+            // startAfterUnlock stays true until walletAddress updates, then the effect starts fold.
+          }}
+        />
+      )}
+      <h2 className="page-title contribute-title">Contribute</h2>
 
       {goatPilot && unsavedUnits.length > 0 && (
-        <div className="wallet-section unsaved-units-alert" role="alert">
+        <div className="wallet-section unsaved-units-alert glass" role="alert">
           <p className="error-text">
             {unsavedUnits.length} accepted work unit{unsavedUnits.length === 1 ? "" : "s"} are
             NOT yet saved — retrying…
@@ -776,12 +825,27 @@ export default function Miner() {
         </div>
       )}
 
-      <div className="wallet-section">
-        <h3>Work backends</h3>
-        {catalogError && <p className="error-text">{catalogError}</p>}
-        {catalog.length === 0 && !catalogError ? (
-          <p className="muted">Loading catalog…</p>
-        ) : (
+      {/* Two columns start here: left content top = Work backends, right = 3D preview (not sticky). */}
+      <div className="contribute-layout">
+        <div className="contribute-main">
+
+      {/* Zero-catalog fallback: catalog still loading or catalog_list failed — the page must
+          never render blank (honesty: failure states stay visible). Same pre-task strings. */}
+      {catalog.length === 0 && (
+        <div className="wallet-section glass">
+          <h3>Work backends</h3>
+          {catalogError ? (
+            <p className="error-text">{catalogError}</p>
+          ) : (
+            <p className="muted">Loading catalog…</p>
+          )}
+        </div>
+      )}
+
+      {catalog.length > 1 && (
+        <div className="wallet-section glass">
+          <h3>Work backends</h3>
+          {catalogError && <p className="error-text">{catalogError}</p>}
           <div className="backend-grid">
             {catalog.map((entry) => (
               <BackendCard
@@ -792,13 +856,22 @@ export default function Miner() {
               />
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {selectedEntry && (
         <>
-          <div className="wallet-section">
-            <h3>{selectedEntry.display_name}</h3>
+          <div className="wallet-section glass">
+            <div className="hero-head">
+              <h2>Contribute</h2>
+              <span className="hero-head__chip">{selectedEntry.display_name}</span>
+            </div>
+            <p className="muted contribute-lede">
+              One app. <strong>Start contributing</strong> downloads the official portable Folding@home
+              client when needed (no EULA installer window) then enables supported GPUs and starts
+              folding. Pause or Stop anytime. Powered by Folding@home open source. Goat does not claim a
+              GPU sandbox. GOAT pilot is optional (Mode B).
+            </p>
             {installError && <p className="error-text">{installError}</p>}
             {installState === null && !installError && <p className="muted">Detecting install…</p>}
 
@@ -807,7 +880,7 @@ export default function Miner() {
                 type="button"
                 className="primary-cta"
                 onClick={handleStartContributing}
-                disabled={!selectedId || contributing || managedRun || foldingActive}
+                disabled={!selectedId || contributing || managedRun || foldingActive || !!foldGateNote}
               >
                 {contributing
                   ? "Starting (portable FAH · GPU · fold)…"
@@ -849,6 +922,7 @@ export default function Miner() {
               </p>
             )}
             {engineDetail && <p className="install-hint">{engineDetail}</p>}
+            {foldGateNote && <p className="install-hint">{foldGateNote}</p>}
             {actionError && <p className="error-text">{actionError}</p>}
 
             {engineState === "missing" && !contributing && !engineDetail && (
@@ -857,28 +931,12 @@ export default function Miner() {
               </div>
             )}
 
-            {(ready || connected) && (
-              <>
-                {!managedRun && (
-                  <details className="advanced-attach">
-                    <summary>Already run Folding@home yourself?</summary>
-                    <p className="muted">
-                      Attach Goat to your existing Folding@home client for read-only progress. This
-                      does not change your client&apos;s settings — only Start contributing
-                      configures CPU and GPU.
-                    </p>
-                    {!connected ? (
-                      <button type="button" onClick={handleAttachConnect}>
-                        Connect
-                      </button>
-                    ) : (
-                      <p className="status-ok">Attached.</p>
-                    )}
-                  </details>
-                )}
+            {connected && status?.linked && (
+              <p className="warning-text">{LINKED_ACCOUNT_WARNING}</p>
+            )}
 
-                {connected && status && (
-                  <div className="miner-status">
+            {(ready || connected) && connected && status && (
+              <div className="miner-status">
                     <p
                       className={
                         status.state === "error"
@@ -893,19 +951,14 @@ export default function Miner() {
                         ? " (assign/download — not computing yet)"
                         : ""}
                     </p>
-                    {(status.units ?? []).some(unitLooksStuck) && (
-                      <div className="wallet-actions-row" style={{ marginBottom: 8 }}>
-                        <button
-                          type="button"
-                          onClick={handleDumpAllStuck}
-                          disabled={Boolean(dumpBusyId)}
-                        >
-                          {dumpBusyId ? "Dumping…" : "Dump stuck units (0% assign/download)"}
-                        </button>
-                      </div>
-                    )}
                     {dumpNote && <p className="status-ok">{dumpNote}</p>}
                     {(status.units ?? []).map((unit) => {
+                      const model = unitRowModel(
+                        unit,
+                        stuckMap,
+                        null,
+                        projectCauses[String(unit.project ?? "")] ?? null,
+                      );
                       // Align with FAH Web Control Progress column (wu_progress → "25.5").
                       const pctStr =
                         unit.progress_pct != null && unit.progress_pct !== ""
@@ -920,10 +973,11 @@ export default function Miner() {
                       const stateTok = unit.state || status.state || "";
                       const stuck = unitLooksStuck(unit);
                       return (
-                        <div key={unit.id} className="progress-row">
+                        <div key={model.key} className="progress-row">
                           <div className="progress-row__label">
                             <span title={unit.id}>
                               {res} · Project {unit.project || "?"}
+                              <span className="unit-row__cause">{model.causeLabel}</span>
                               {wuNum ? ` · WU ${wuNum}` : ""}
                               {stateTok ? ` · ${stateTok}` : ""}
                               {stuck ? " · stuck?" : ""}
@@ -941,18 +995,17 @@ export default function Miner() {
                           >
                             <div
                               className="progress-bar__fill"
-                              style={{ width: `${Math.min(100, Math.max(0, pctNum))}%` }}
+                              style={{ transform: `scaleX(${Math.min(100, Math.max(0, pctNum)) / 100})` }}
                             />
                           </div>
                           <div className="wallet-actions-row">
                             <p className="fah-unit-id muted" title={unit.id}>
                               {unit.id}
                             </p>
-                            {(stuck ||
-                              String(stateTok).toUpperCase() === "PAUSE" ||
-                              String(stateTok).toUpperCase() === "PAUSED") && (
+                            {model.showDump && (
                               <button
                                 type="button"
+                                className="unit-row__dump"
                                 disabled={dumpBusyId === unit.id}
                                 onClick={() => handleDumpUnit(unit.id)}
                               >
@@ -976,300 +1029,33 @@ export default function Miner() {
                     ) : null}
                   </div>
                 )}
-
-                <div className="miner-power">
-                  <p className="muted">FAH resource control — never affects mint</p>
-                  <div className="network-switch" role="group" aria-label="Power level">
-                    {POWER_LEVELS.map((level) => (
-                      <button
-                        key={level.id}
-                        type="button"
-                        className={`network-switch__btn ${powerLevel === level.id ? "active" : ""}`}
-                        aria-pressed={powerLevel === level.id}
-                        onClick={() => handlePower(level.id)}
-                      >
-                        {level.label}
-                      </button>
-                    ))}
-                  </div>
-                  {powerError && <p className="error-text">{powerError}</p>}
-                </div>
-
-                {showTeamBrand(identity) && (
-                  <a
-                    className="team-brand"
-                    href={TEAM_STATS_URL}
-                    target="_blank"
-                    rel="noreferrer"
-                    title="GOAT — Folding@home team 1068318 (live public stats)"
-                  >
-                    <img src={brandLockup} alt="GOAT — view Folding@home team 1068318 live stats" />
-                  </a>
-                )}
-              </>
-            )}
-          </div>
-
-          <div className="wallet-section passkey-section">
-            <h3>FAH team</h3>
-            <p className="muted">
-              Science credits go to Folding@home <strong>team {GOAT_FAH_TEAM_ID}</strong> (GOAT). If
-              this machine was linked with an account token, the account may force another team
-              (e.g. 11) — that overrides username-only config until you fix the account team or
-              unlink.
-            </p>
-            {status?.team != null && String(status.team) !== "" ? (
-              <p
-                className={
-                  String(status.team) === GOAT_FAH_TEAM_ID ? "status-ok" : "status-warn"
-                }
-                role={String(status.team) === GOAT_FAH_TEAM_ID ? undefined : "alert"}
-              >
-                Live FAH team: <strong>{String(status.team)}</strong>
-                {String(status.team) === GOAT_FAH_TEAM_ID
-                  ? " (GOAT)"
-                  : ` — wrong team (want ${GOAT_FAH_TEAM_ID})`}
-              </p>
-            ) : (
-              <p className="muted">Live team unknown until connected / Start contributing.</p>
-            )}
-            <div className="wallet-actions-row">
-              <button type="button" disabled={teamBusy} onClick={handleSetGoatTeam}>
-                {teamBusy ? "Setting…" : `Set GOAT team (${GOAT_FAH_TEAM_ID})`}
-              </button>
-              <a className="muted" href={TEAM_STATS_URL} target="_blank" rel="noreferrer">
-                Team stats
-              </a>
-            </div>
-            {teamNote && (
-              <p className={/wrong|still reports|unlink/i.test(teamNote) ? "status-warn" : "status-ok"}>
-                {teamNote}
-              </p>
-            )}
-          </div>
-
-          <div className="wallet-section passkey-section">
-            <h3>FAH username</h3>
-            <p className="muted">
-              Folding@home credits science under this name (not your wallet name). Everyone folds as{" "}
-              <code>GOAT-…</code>. This is also what bind &amp; enroll uses for pilot attribution —
-              separate from wallet address / wallet vault name.
-            </p>
-            {identity?.username?.trim() ? (
-              <p className="status-ok">
-                Current FAH username: <strong>{identity.username}</strong>
-              </p>
-            ) : (
-              <p className="status-warn" role="alert">
-                No FAH username set in Goat. ClientWeb may still show an old FAH default (e.g.
-                GoatLeader) until you save one here and restart contributing.
-              </p>
-            )}
-            <form className="username-form" onSubmit={handleSaveUsername}>
-              <div className="firstrun-input-row">
-                <span className="firstrun-prefix">{GOAT_USERNAME_PREFIX}</span>
-                <input
-                  type="text"
-                  name="fah-username"
-                  autoComplete="off"
-                  placeholder="your name (letters, digits, _)"
-                  value={usernameDraft}
-                  onChange={(ev) => {
-                    setUsernameDraft(ev.target.value);
-                    setUsernameError("");
-                    setUsernameSavedNote("");
-                  }}
-                  spellCheck={false}
-                />
-              </div>
-              <p className="firstrun-preview muted">
-                Will save as{" "}
-                <strong>
-                  {fullUsername(
-                    usernameDraft.trim().toUpperCase().startsWith(GOAT_USERNAME_PREFIX.toUpperCase())
-                      ? usernameDraft.trim().slice(GOAT_USERNAME_PREFIX.length)
-                      : usernameDraft,
-                  ) || "GOAT-…"}
-                </strong>
-              </p>
-              <button
-                type="submit"
-                disabled={
-                  usernameSaving ||
-                  !canSubmitUsername(
-                    usernameDraft.trim().toUpperCase().startsWith(GOAT_USERNAME_PREFIX.toUpperCase())
-                      ? usernameDraft.trim().slice(GOAT_USERNAME_PREFIX.length)
-                      : usernameDraft,
-                  )
-                }
-              >
-                {usernameSaving
-                  ? "Saving…"
-                  : identity?.username?.trim()
-                    ? "Update FAH username"
-                    : "Save FAH username"}
-              </button>
-            </form>
-            {usernameError && <p className="error-text">{usernameError}</p>}
-            {usernameSavedNote && <p className="status-ok">{usernameSavedNote}</p>}
-            {identity?.username?.trim() && (
-              <p className="muted">
-                Changing the name later pauses pilot attribution until bind matches again. Stop +
-                Start contributing after a change so the FAH client applies it.
-              </p>
-            )}
-          </div>
-
-          <div className="wallet-section passkey-section">
-            <h3>Optional FAH passkey</h3>
-            <p className="muted">
-              Optional 32-hex Folding@home passkey for QRB bonus. Not required for base score or
-              wallet attribution. Sent only to your local FAH client — not your wallet password.
-            </p>
-            {identity?.passkey_set ? (
-              <p className="status-ok">
-                Passkey on file
-                {identity?.passkey_is_default
-                  ? " (legacy shared key — replace with your own when you can)."
-                  : "."}
-              </p>
-            ) : (
-              <p className="muted">No passkey set — base folding still attributes via username.</p>
-            )}
-            <form className="passkey-form" onSubmit={handleSavePasskey}>
-              <input
-                type="password"
-                name="fah-passkey"
-                autoComplete="off"
-                placeholder="32 hex chars (optional)"
-                value={passkeyDraft}
-                onChange={(ev) => {
-                  setPasskeyDraft(ev.target.value);
-                  setPasskeyError("");
-                  setPasskeySavedNote("");
-                }}
-                spellCheck={false}
-              />
-              <button type="submit" disabled={passkeySaving || !isValidPasskeyInput(passkeyDraft)}>
-                {passkeySaving ? "Saving…" : "Save passkey"}
-              </button>
-            </form>
-            {passkeyError && <p className="error-text">{passkeyError}</p>}
-            {passkeySavedNote && <p className="status-ok">{passkeySavedNote}</p>}
           </div>
 
           {goatPilot ? (
-            <>
-              <div className="wallet-section">
-                <h3>Bound wallet</h3>
-                {walletAddress ? (
-                  <p className="status-ok">
-                    Pilot attribution targets {walletAddress} after bind &amp; enroll (testnet).
-                  </p>
-                ) : (
-                  <p className="status-warn">No wallet unlocked — set one in Wallet to bind &amp; enroll</p>
-                )}
-              </div>
-
-              <EarningStatus
-                networkId={networkId}
-                account={account}
-                walletAddress={walletAddress}
-                fahUsername={identity?.username ?? null}
-              />
-
-              <div className="wallet-section">
-                <div className="wallet-section-header">
-                  <h3>Pending work units</h3>
-                  <div className="wallet-actions-row">
-                    <button
-                      type="button"
-                      onClick={checkCompletions}
-                      disabled={!connected || checking}
-                    >
-                      {checking ? "Checking…" : "Check for accepted work"}
-                    </button>
-                  </div>
-                </div>
-                {checkError && <p className="error-text">{checkError}</p>}
-                <p className="muted credit-lag-note">{CREDIT_LAG_NOTE}</p>
-                {pendingForSelected.length === 0 ? (
-                  <p className="placeholder-note">
-                    No pending units yet — credited work units come from Folding@home&apos;s public
-                    stats and can lag hours after a unit finishes locally. Click Check for accepted
-                    work to poll.
-                  </p>
-                ) : (
-                  <table className="pending-table">
-                    <thead>
-                      <tr>
-                        <th>id</th>
-                        <th>when</th>
-                        <th>weight</th>
-                        <th>status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pendingForSelected.map((unit) => (
-                        <tr key={unit.unit_id}>
-                          <td>
-                            <code>{unit.unit_id}</code>
-                          </td>
-                          <td>{new Date(unit.at * 1000).toLocaleString()}</td>
-                          <td>{unit.weight}</td>
-                          <td>
-                            {unit.mintedInBatch == null ? (
-                              <span className="status-warn">Pending</span>
-                            ) : (
-                              <span className="status-ok">{`Minted (batch ${unit.mintedInBatch})`}</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            </>
+            <EarningStatus
+              networkId={networkId}
+              account={account}
+              walletAddress={walletAddress}
+              connected={connected}
+              fahUsername={identity?.username ?? null}
+              fahPasskey={identity?.passkey ?? null}
+              pendingUnits={pendingForSelected}
+              onCheckWork={checkCompletions}
+              checking={checking}
+              checkError={checkError}
+            />
           ) : (
-            <div className="wallet-section">
-              <h3>GOAT pilot</h3>
-              <p className="mode-gate-note" role="status">
-                Public good only — GOAT pilot is off. Switch mode to join testnet GOAT.
-              </p>
+            <div className="glass earning-off">
+              <p>{EARNING_OFF_CARD}</p>
             </div>
           )}
-
-          <div className="wallet-section">
-            <h3>Job</h3>
-            <dl className="balance-grid">
-              <dt>Backend</dt>
-              <dd>{selectedEntry.display_name}</dd>
-              <dt>Beneficiary</dt>
-              <dd>{selectedEntry.beneficiary}</dd>
-              <dt>Isolation</dt>
-              <dd>{selectedEntry.isolation_class}</dd>
-              <dt>Honesty</dt>
-              <dd>
-                {(selectedEntry.honesty_tags ?? []).length === 0
-                  ? "—"
-                  : selectedEntry.honesty_tags.join(" · ")}
-              </dd>
-              <dt>Formula</dt>
-              <dd>{selectedEntry.formula}</dd>
-            </dl>
-            <p className="muted autoconfig-note">{autoConfigNote(status?.linked)}</p>
-            <p className="required-copy">
-              {goatPilot
-                ? "The backend does the science; Goat settles pilot GOAT after founder accept — testnet."
-                : "The backend does the science. Public-good mode does not mint GOAT — switch mode for the testnet pilot."}
-            </p>
-          </div>
         </>
       )}
         </div>
 
-        <FahPreview status={status} folding={foldingActive || contributing} />
+        <div className="contribute-side">
+          <FahPreview status={status} folding={foldingActive || contributing} />
+        </div>
       </div>
     </section>
   );

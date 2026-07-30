@@ -537,8 +537,8 @@ export const MOCK_USDT_ABI = [
   },
 ];
 
-// BuyDeskFactory.sol (docs/superpowers/specs/2026-07-13-donor-buydesk-factory-
-// multidesk-design.md §2.1) — deploys per-owner BuyDesk instances. Any
+// BuyDeskFactory.sol (the "Donor BuyDesk Factory + Multi-Desk UI — Design"
+// spec, §2.1) — deploys per-owner BuyDesk instances. Any
 // enrolled wallet (every worker already is one) becomes a donor by calling
 // createDesk: same wallet, no second key, no extra founder approval. Market
 // tab (desktop/src/tabs/Market.jsx) is the only consumer.

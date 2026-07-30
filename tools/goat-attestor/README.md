@@ -12,7 +12,7 @@ Standalone Rust daemon for **GOAT FAH attribution** (Phase 2): untrusted propose
 | **T6 Enrollment snapshot** | Newly bound workers get a prompt Merkle batch so first `claimPayout` can stamp baseline (mint 0). |
 | **T7 Epoch proposer** | Daily freeform epoch (`YYYYMMDD` u64): scores → Merkle root → `proposeBatch` + evidence; watcher `confirmEpoch`. |
 | **T8 Challenger** | Dual-mode: **inflate-only** post-baseline daily; **strict equality** for enrollment / pre-baseline (under-report = protocol theft). |
-| **Relayer** | HTTP gas sponsorship: `POST /v1/relay/bind`, `POST /v1/relay/enroll`, `GET /health`. |
+| **Relayer** | HTTP gas sponsorship: `POST /v1/relay/bind`, `POST /v1/relay/enroll`, `POST /v1/relay/gas-drip`, `GET /health`. |
 | **Auto-registry** | On every `run` / `once-propose` / `sync-registry`, pulls all `WorkerBinding.Bound` logs into `REGISTRY_JSON`. Successful gasless bind also upserts the worker immediately. Ops no longer hand-edit each new bind. |
 | **Auto-earn** | `auto-earn` / `daemon` / `run`: propose → warp (anvil) → confirm → finalize → **claimPayout** for every leaf. See `docs/FOLD_TO_GOAT_AUTOMATION.md`. |
 
@@ -38,6 +38,8 @@ Copy `.env.example`. Required:
 
 - `RPC_URL`, `CHAIN_ID`
 - `EPOCH_SETTLEMENT_ADDRESS`, `WORKER_BINDING_ADDRESS`, `ENROLLMENT_REGISTRY_ADDRESS`
+- `WORKER_BINDING_DEPLOY_BLOCK` (G-B1: Bound log scan start; **required** on non-anvil, e.g. Base Sepolia)
+- `ETH_GETLOGS_CHUNK` (optional; default `2000` — max blocks per `eth_getLogs` page)
 - `REGISTRY_JSON` — local worker list (`{ "workers": [ { wallet, username, baseline_batched } ] }`)
 
 ### Mock vs live
@@ -54,7 +56,87 @@ Live role keys (0x-hex private keys):
 - `CHALLENGER_PRIVATE_KEY` — `challengeBatch` (+ bond value)
 - `RELAYER_PRIVATE_KEY` — `bindWithSignature` / `enrollSelfWithSignature`
 
-Optional defaults: `FAH_STATS_BASE`, `POLL_INTERVAL_S`, `MIN_FAH_INTERVAL_MS`, bonds, `RELAYER_BIND`, `STATE_DIR`, `EVIDENCE_DIR`.
+Optional defaults: `FAH_STATS_BASE`, `POLL_INTERVAL_S`, `MIN_FAH_INTERVAL_MS`, bonds, `RELAYER_BIND`, `STATE_DIR`, `EVIDENCE_DIR`, `GOAT_COIN_ADDRESS`, `GAS_DRIP_*` (see below).
+
+## Gas-drip endpoint (gasless-sell native-gas top-up)
+
+`POST /v1/relay/gas-drip` tops up a wallet's **native gas** (not GOAT) so it
+can afford the `approve` + `sell` transactions of a gasless sell, without the
+wallet ever holding ETH. It is served by `serve-relayer` alongside
+`/v1/relay/bind` / `/v1/relay/enroll`.
+
+**Live vs disabled:** the endpoint is only wired up when BOTH a GoatCoin
+token address is configured (`GOAT_COIN_ADDRESS`) AND the daily cap resolves
+non-zero (`GAS_DRIP_DAILY_CAP` unset/default or explicitly > 0). If either is
+missing, every request gets `503 { "error": "GasDripDisabled" }` — a
+misconfiguration, not a code path bug. Startup logs `gas-drip=enabled` or
+`gas-drip=disabled` in the `relayer listening on …` line so this is visible
+without probing the endpoint.
+
+### Request / response
+
+```jsonc
+// POST /v1/relay/gas-drip
+{ "wallet": "0xabc...def" }
+```
+
+Success (`200`):
+
+```jsonc
+{
+  "ok": true,
+  "tx_hash": "0x...",
+  "amount_wei": "270000000000000",   // DECIMAL STRING — exceeds Number.MAX_SAFE_INTEGER, do not parse as a bare JS number
+  "remaining_today": 0                // drips left today under the configured cap
+}
+```
+
+Error responses (all JSON, `error` field always present):
+
+| Status | `error` | Meaning |
+|--------|---------|---------|
+| 400 | human-readable validation message (e.g. `"wallet must be 0x + 40 hex, got …"`) | malformed `wallet` |
+| 400 | `NoGoatToSell` | wallet holds 0 GoatCoin — nothing to gaslessly sell |
+| 409 | `DripInProgress` | a request for this wallet is already in flight |
+| 429 | `DailyLimitReached` | cap hit; body also carries `"limit"` (the **configured** cap) and `"resets_at"` (next UTC midnight, ISO-8601) |
+| 502 | `"erc20_balance_of: …"` / `"gas_price: …"` | transient upstream chain-RPC call failure |
+| 502 | `DripSendFailed` | native send failed **after** the day's quota was already reserved; body carries `"quota_consumed": true` — the quota is **not** refunded, so an immediate retry can legitimately 429 next |
+| 503 | `GasDripDisabled` | endpoint not wired up (see above) |
+| 503 | `RelayerUnderfunded` | relayer's own ETH balance can't cover the drip, or its signer/key isn't configured |
+| 503 | `GasDripLedgerUnavailable` | the on-disk quota ledger couldn't be written; request fails closed with **no send** |
+
+### Env knobs
+
+All optional; unset → `DripConfig::default()` (or `DEFAULT_DAILY_CAP` for the cap). Invalid values are **rejected/clamped defensively** rather than allowed to panic or silently misbehave at request time:
+
+| Var | Default | Validation |
+|-----|---------|------------|
+| `GOAT_COIN_ADDRESS` | unset (endpoint disabled) | none — synced from desktop deployment JSON's `goatCoin` |
+| `GAS_DRIP_MAX_WEI` | `20000000000000000` (0.02 ETH) | none beyond numeric parse |
+| `GAS_DRIP_BUFFER_NUM` | `3` | none beyond numeric parse |
+| `GAS_DRIP_BUFFER_DEN` | `2` | **`0` would panic the drip-amount division** — logged at error level and replaced with the default (`2`) |
+| `GAS_DRIP_DAILY_CAP` | `1` (`DEFAULT_DAILY_CAP`) | **`0` disables the endpoint** (logged at info) instead of embedding a cap that would 429 every request |
+| `GAS_DRIP_APPROVE_GAS` | `68000` | clamped to a 5,000,000 gas ceiling (logged) — defends the `approve_gas + sell_gas` addition against overflow on hostile/typo'd input; aligns with desktop `APPROVE_GAS` |
+| `GAS_DRIP_SELL_GAS` | `170000` | clamped to a 5,000,000 gas ceiling (logged); aligns with desktop `SELL_GAS` |
+
+A syntactically invalid value (non-numeric) still fails config load with a `ConfigError`, same as every other numeric env var in this crate.
+
+`gas_drips.json` lives in `STATE_DIR` (same directory as other daemon state).
+
+### Operational notes
+
+- **Single-instance-per-file.** The ledger (`STATE_DIR/gas_drips.json`) is a
+  plain file with an atomic-rename write (`gas_drips.json.tmp` → rename over
+  the real path — that `.tmp` name is fixed, not per-process). It is **not**
+  safe for two `serve-relayer` processes to point at the same ledger file
+  concurrently: run exactly one relayer per `gas_drips.json`.
+- **Transient `503 GasDripLedgerUnavailable` on Windows is expected, not a
+  bug.** If any other process (an editor, a backup tool, a second attestor)
+  has the ledger file open at the moment of a commit, Windows file locking
+  can make the write fail; the handler fails closed (no send, quota not
+  consumed) and returns this 503. This is the intended fail-closed behavior
+  for an unwritable ledger, not a code defect — it should clear on retry once
+  the file is released.
 
 ### Local anvil
 
@@ -158,7 +240,7 @@ cargo build
 
 ```text
 src/
-  config.rs      env / map loader (+ role private keys)
+  config.rs      env / map loader (+ role private keys, gas-drip config)
   fah.rs         FAH stats client + FixtureHttp
   http_live.rs   LiveHttp (reqwest) + AnyHttp
   merkle.rs      keccak leaf + OZ tree
@@ -181,6 +263,14 @@ fixtures/        recorded FAH responses
 | User-facing build | `https://api.…` (founder infra) | Founder ops — **gas keys never on worker PCs** |
 
 `serve-relayer` is infrastructure. Shipping localhost to end users is a misconfiguration, not a product mode.
+
+### Perimeter (H4 / H5 / H6)
+
+| Control | Behavior |
+|---------|----------|
+| **H4 CORS** | Origin allowlist **by default**: Vite (`http://localhost:5173`, `http://127.0.0.1:5173`) **and** packaged Tauri (`http://tauri.localhost`, `https://tauri.localhost`, `tauri://localhost`). Set `RELAY_CORS_ORIGINS` (comma-separated) to **union** extra origins with those defaults. Allowed headers: `content-type`, `cf-access-client-id`, `cf-access-client-secret`. Methods: GET, POST, OPTIONS. |
+| **H5 body cap** | Request bodies limited to 8 KiB (`DefaultBodyLimit`). |
+| **H6 loopback** | Default: `RELAYER_BIND` / `--bind` must be `127.0.0.1` or `::1`; `0.0.0.0` / LAN rejected before listen (cloudflared → loopback). **Container/cloud escape hatch:** `RELAY_ALLOW_NON_LOOPBACK=1` permits non-loopback binds and logs WARN — use only when a tunnel/proxy is the outer gate (Docker/K8s/VPS). |
 
 ## License
 

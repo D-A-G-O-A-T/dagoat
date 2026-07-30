@@ -7,7 +7,8 @@ import {EnrollmentRegistry} from "../src/EnrollmentRegistry.sol";
 import {BuyDeskFactory} from "../src/BuyDeskFactory.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 
-/// Deploys BuyDeskFactory (design 2026-07-13) on top of the existing
+/// Deploys BuyDeskFactory (the "Donor BuyDesk Factory + Multi-Desk UI — Design"
+/// spec) on top of the existing
 /// free-market stack. HARD GATE: allows only Base Sepolia (84532) and
 /// local anvil (31337), mirroring DeployFreeMarket. Reads the already
 /// deployed GOAT/registry/USDT addresses — the factory never deploys its

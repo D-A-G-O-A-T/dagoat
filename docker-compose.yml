@@ -48,10 +48,10 @@ x-goatd: &goatd
     - ./genesis.json:/etc/goatd/genesis.json:ro   # read-only genesis, loaded at boot
     # Per-node identity keys would be mounted here in production (see MIGRATION.md §4), e.g.:
     #   - ./keys/node-0/node_secret:/etc/goatd/node_secret:ro   # chmod 600, never baked into the image
-    #   - ./keys/node-0/signing_seed → GOATD_SIGNING_SEED (identity-hardening Alpha path)
+    #   - ./keys/node-0/signing_seed → GOATD_SIGNING_SEED (Council-1 Alpha path)
 
   # Lab-only: bind is 0.0.0.0 (non-loopback). Deterministic testnet signing seeds require an
-  # explicit opt-in (identity-hardening). For Alpha / off-host, remove this and set GOATD_SIGNING_SEED.
+  # explicit opt-in (Council-1). For Alpha / off-host, remove this and set GOATD_SIGNING_SEED.
   environment: &goat_env
     GOATD_ALLOW_TESTNET_SEEDS: "1"
 

@@ -8,5 +8,5 @@
   "mockUSDT": null,
   "unitReward": null,
   "workMinter": null,
-  "note": "Sepolia v2 not yet deployed. Run DeployFreeMarket per contracts/SEASON0_UI_RUNBOOK.md, reusing EXISTING_GOAT/EXISTING_REGISTRY/EXISTING_USDT from the v1 addresses (0x7e7553bc…, 0xa8326d35…, 0x63bb8f47…), then copy contracts/deployments/84532.json over this file."
+  "note": "Base Sepolia v2 not yet deployed. Use contracts/testnet-up.ps1 (fresh stack — do not reuse retired v1 addresses). Then copy contracts/deployments/84532*.json here (script does this) and freeze before volunteer builds (G-B2)."
 }

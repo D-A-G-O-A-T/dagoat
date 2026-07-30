@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "stream-g-eip712-vectors-v1",
+  "chainId": "31337",
+  "notes": "Pinned by contracts/test/StreamGEip712Parity.t.sol. Digests use EIP-712 domain separator formula with name/version/chainId/verifyingContract.",
+  "domains": {
+    "gateway": {
+      "name": "GoatRelayGateway",
+      "version": "1",
+      "chainId": "31337",
+      "verifyingContract": "0x3333333333333333333333333333333333333333"
+    },
+    "sponsorship": {
+      "name": "GoatWalletSponsorship",
+      "version": "1"
+    },
+    "enrollmentV1": {
+      "name": "GoatEnrollmentRegistry",
+      "version": "1"
+    }
+  },
+  "typehashes": {
+    "FeeQuote": "0xeaeb044887c8cf8cd0fa7dcbfa981c25dd31ffebc55f4eca160b680c34ff4169",
+    "SponsorEnrollment": "0xaa3769f433b96287c3b0838abbc6b35619375fea0e81929c58cf672804b9e885",
+    "SponsorEnrollmentCore": "0x1eed3561f8deb1be9863b6ba6959db364a4910bd36991fb749cb4ae27e1246f4",
+    "LinkSecondary": "0xd13c2b44c281e3e64f71fefdd22c0981a18181362d0596732c5432c20c0c275b",
+    "FeeTokenConfig": "0xdf3f4881a773320188104db0a63dab7043eb60cac6c8e7eea34993ccf6e77b36"
+  },
+  "actionTypes": {
+    "SPONSORED_ENROLLMENT": "0xbcd123c051cd9b628e040adc5b6509f0a172883d597875aa799b30bfe9a82807",
+    "SPONSORED_SELL": "keccak256(GOAT_STREAM_G_SPONSORED_SELL_V1)",
+    "GOAT_TRANSFER": "keccak256(GOAT_STREAM_G_GOAT_TRANSFER_V1)",
+    "USDT_TRANSFER": "keccak256(GOAT_STREAM_G_USDT_TRANSFER_V1)"
+  },
+  "authorizationModes": {
+    "NONE": 0,
+    "EIP2612": 1,
+    "EIP3009": 2,
+    "PRIOR_ALLOWANCE": 3
+  },
+  "capabilityBits": {
+    "EIP2612": 1,
+    "EIP3009": 2,
+    "PRIOR_ALLOWANCE": 4,
+    "SELL_SPLIT": 8
+  },
+  "vectors": {
+    "feeQuote": {
+      "message": {
+        "quoteId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "actionType": "0xbcd123c051cd9b628e040adc5b6509f0a172883d597875aa799b30bfe9a82807",
+        "actionCoreHash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+        "deploymentManifestHash": "0x0000000000000000000000000000000000000000000000000000000000000003",
+        "feeTokenConfigHash": "0x0000000000000000000000000000000000000000000000000000000000000004",
+        "feeScheduleHash": "0x0000000000000000000000000000000000000000000000000000000000000005",
+        "payer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "feeToken": "0x00000000000000000000000000000000000000a1",
+        "feeAmount": "250000",
+        "feeRecipient": "0x00000000000000000000000000000000000000b1",
+        "validAfter": "1700000000",
+        "validUntil": "1700000120"
+      },
+      "digest": "0xb82a7f8564a67b0225bf729dfcd86961ff34b3a583c7ecd7c38d1011c3881469"
+    }
+  }
+}

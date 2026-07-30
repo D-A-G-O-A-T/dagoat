@@ -1,4 +1,4 @@
-# GoatHAL Isolation Design (execution-isolation / Vector 1.1)
+# GoatHAL Isolation Design (Council-6 / Vector 1.1)
 
 **Status:** contract + Phase-0 portable proof (AR96); Linux production backend design-first  
 **Related:** `GoatHAL_Threat_Model.md`, `goatcoin-rs` `GoatBackend` trait (oracle), AR86 container hardening
@@ -31,7 +31,7 @@ execute(task: OpaqueTask, policy: ExecPolicy) -> Result<WorkerReport, IsolationE
 | Condition | Behavior |
 |-----------|----------|
 | Isolation unavailable (OS lacks primitives, worker binary missing, policy refuses) | **Do not execute** payloads; mesh verification/gossip may continue |
-| Dev escape | Only with explicit flag **and** loopback-class bind (mirror Track-A / identity-hardening discipline) — never on public bind |
+| Dev escape | Only with explicit flag **and** loopback-class bind (mirror Track-A / Council-1 discipline) — never on public bind |
 | Worker crash / timeout / OOM | Contained failure report; restart policy optional; **no** host unsandboxed fallback |
 
 ### 1.4 Neutrality

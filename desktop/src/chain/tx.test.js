@@ -57,7 +57,10 @@ describe("runTx", () => {
       functionName: "doThing",
       args: [1, 2],
     });
-    expect(publicClient.waitForTransactionReceipt).toHaveBeenCalledWith({ hash: "0xhash" });
+    expect(publicClient.waitForTransactionReceipt).toHaveBeenCalledWith({
+      hash: "0xhash",
+      timeout: 60_000,
+    });
   });
 
   it("propagates a simulateContract revert without calling writeContract", async () => {
@@ -78,5 +81,29 @@ describe("runTx", () => {
       })
     ).rejects.toThrow("NotSafe");
     expect(walletClient.writeContract).not.toHaveBeenCalled();
+  });
+
+  // Review round 1, "also": simulateContract runs against state at call time;
+  // the real mined tx can still revert on a state change between simulate and
+  // inclusion (TOCTOU) even though it consumed real gas. Before this fix,
+  // runTx resolved on ANY receipt, so a reverted-but-mined tx looked
+  // identical to a success to every caller (Market.jsx would report "Sold
+  // (testnet)", fire onSuccess, and clear the gas floor for a tx that never
+  // actually landed).
+  it("throws when the receipt status is reverted, so a mined-but-reverted tx is not treated as success", async () => {
+    const { publicClient, walletClient } = makeClients();
+    publicClient.waitForTransactionReceipt = vi.fn(async () => ({ status: "reverted" }));
+
+    await expect(
+      runTx({
+        publicClient,
+        walletClient,
+        account: { address: "0xaccount" },
+        address: "0xcontract",
+        abi: ABI,
+        functionName: "doThing",
+        args: [],
+      })
+    ).rejects.toThrow(/reverted/i);
   });
 });

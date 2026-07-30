@@ -1,7 +1,8 @@
 import { keccak256, stringToBytes } from "viem";
 
-// Season-0's single FAH job id, per Global Constraints (docs/superpowers/plans/
-// 2026-07-11-season0-fullsystem.md) and design §7: Ops creates this job once
+// Season-0's single FAH job id, per Global Constraints in the "Season-0 Full
+// System Implementation Plan (Miner + Wallet + Free-Market Mint)" and design
+// §7: Ops creates this job once
 // against WorkMinter.createJob; Wallet reads escrow.holdbackOf(jobId, addr)
 // for it. Kept as one shared constant so Wallet/Ops/Miner never diverge.
 export const SEASON0_FAH_JOB_ID_STR = "season0-fah";

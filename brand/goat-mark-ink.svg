@@ -1,0 +1,10 @@
+<svg width="1040" height="960" viewBox="0 0 260 240" xmlns="http://www.w3.org/2000/svg">
+  <path d="M62 210 C74 148 120 98 190 80 C152 106 106 150 82 216 Z" fill="#1a1917"/>
+  <path d="M186 84 C214 62 226 32 210 8 C216 36 200 62 174 80 Z" fill="#1a1917"/>
+  <path d="M170 82 C190 60 194 34 180 16 C186 40 172 62 156 78 Z" fill="#1a1917"/>
+  <path d="M188 82 C206 90 218 104 222 122 C212 106 200 94 182 90 Z" fill="#1a1917"/>
+  <path d="M206 122 C215 134 217 149 209 160 C212 147 208 133 200 127 Z" fill="#1a1917"/>
+  <circle cx="197" cy="99" r="3.6" fill="#1a1917"/>
+  <rect x="214" y="182" width="36" height="36" rx="4" fill="#b3382c"/>
+  <text x="232" y="200" font-family="Yu Mincho,YuMincho,MS Mincho,SimSun,Noto Serif CJK JP,serif" font-size="26" fill="#f6efe6" text-anchor="middle" dominant-baseline="central">羊</text>
+</svg>

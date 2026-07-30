@@ -1,4 +1,4 @@
-//! GoatCoin ML-DSA-65 key material helper (Track C + identity-hardening).
+//! GoatCoin ML-DSA-65 key material helper (Track C + Council-1).
 //!
 //! ## Modes
 //!
@@ -48,7 +48,7 @@ fn main() {
         emit_random(count, out_dir.as_deref());
     } else {
         eprintln!(
-            "goat-keygen: DETERMINISTIC testnet seeds (FORGEABLE). Lab only — identity-hardening / ALPHA_PILOT."
+            "goat-keygen: DETERMINISTIC testnet seeds (FORGEABLE). Lab only — Council-1 / ALPHA_PILOT."
         );
         for i in 0u8..count.min(5) {
             let seed = testnet_signing_seed(i);

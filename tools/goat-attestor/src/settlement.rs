@@ -6,7 +6,7 @@
 use tracing::{info, warn};
 
 use crate::chain::{BatchStatus, ChainClient, ChainError};
-use crate::merkle::{Leaf, MerkleTree, parse_address};
+use crate::merkle::{parse_address, Leaf, MerkleTree};
 use crate::proposer::EpochBatch;
 
 #[derive(Debug, Clone)]
@@ -112,8 +112,8 @@ pub fn settle_and_claim_batch(
     // Rebuild Merkle tree from batch leaves for OZ proofs.
     let mut leaves = Vec::with_capacity(batch.leaves.len());
     for rec in &batch.leaves {
-        let wallet = parse_address(&rec.wallet)
-            .map_err(|e| ChainError::Msg(format!("leaf wallet: {e}")))?;
+        let wallet =
+            parse_address(&rec.wallet).map_err(|e| ChainError::Msg(format!("leaf wallet: {e}")))?;
         leaves.push(Leaf {
             wallet,
             cumulative_score: rec.cumulative_score,
@@ -195,12 +195,7 @@ pub fn settle_and_claim_batch(
                 continue;
             }
         };
-        match chain.claim_payout(
-            batch.epoch_id,
-            wallet,
-            rec.cumulative_score,
-            &proof,
-        ) {
+        match chain.claim_payout(batch.epoch_id, wallet, rec.cumulative_score, &proof) {
             Ok(tx) => {
                 report.claims_ok += 1;
                 info!(
@@ -217,9 +212,7 @@ pub fn settle_and_claim_batch(
                     "claim failed epoch={} worker={}: {e}",
                     batch.epoch_id, rec.wallet
                 );
-                report
-                    .notes
-                    .push(format!("claim {}: {e}", rec.wallet));
+                report.notes.push(format!("claim {}: {e}", rec.wallet));
             }
         }
     }
@@ -250,16 +243,15 @@ mod tests {
         )
     }
 
-    fn propose_and_finalize(chain: &MockChain, epoch: u64, score: u128) -> crate::proposer::EpochBatch {
+    fn propose_and_finalize(
+        chain: &MockChain,
+        epoch: u64,
+        score: u128,
+    ) -> crate::proposer::EpochBatch {
         let workers = [alice_worker(score)];
         let batch = build_epoch_batch(epoch, &workers, None).unwrap();
         chain
-            .propose_batch(
-                batch.epoch_id,
-                batch.merkle_root,
-                batch.evidence_ref,
-                BOND,
-            )
+            .propose_batch(batch.epoch_id, batch.merkle_root, batch.evidence_ref, BOND)
             .unwrap();
         batch
     }
@@ -273,7 +265,9 @@ mod tests {
         assert!(report.finalized || report.claims_ok >= 1 || report.confirmed);
         // After claim, has baseline
         assert_eq!(
-            chain.has_baseline("0x00000000000000000000000000000000000000a1").unwrap(),
+            chain
+                .has_baseline("0x00000000000000000000000000000000000000a1")
+                .unwrap(),
             Some(true)
         );
         assert_eq!(report.claims_skipped, 0);
@@ -303,7 +297,10 @@ mod tests {
         assert_eq!(report.claims_skipped, 1);
         assert_eq!(report.claims_ok, 0);
         assert!(
-            !chain.ops().iter().any(|op| matches!(op, MockOp::Claim { .. })),
+            !chain
+                .ops()
+                .iter()
+                .any(|op| matches!(op, MockOp::Claim { .. })),
             "must not claim when last_claimed >= leaf score: {:?}",
             chain.ops()
         );
@@ -342,7 +339,10 @@ mod tests {
         assert_eq!(report.claims_deferred, 0);
         assert_eq!(report.claims_ok, 1);
         assert!(
-            chain.ops().iter().any(|op| matches!(op, MockOp::Claim { .. })),
+            chain
+                .ops()
+                .iter()
+                .any(|op| matches!(op, MockOp::Claim { .. })),
             "unset last_claimed must not skip: {:?}",
             chain.ops()
         );
@@ -359,7 +359,10 @@ mod tests {
         assert_eq!(report.claims_skipped, 0);
         assert_eq!(report.claims_ok, 0);
         assert!(
-            !chain.ops().iter().any(|op| matches!(op, MockOp::Claim { .. })),
+            !chain
+                .ops()
+                .iter()
+                .any(|op| matches!(op, MockOp::Claim { .. })),
             "must not claim when last_claimed RPC fails: {:?}",
             chain.ops()
         );
@@ -378,7 +381,10 @@ mod tests {
         assert_eq!(report.claims_skipped, 0);
         assert_eq!(report.claims_ok, 0);
         assert!(
-            !chain.ops().iter().any(|op| matches!(op, MockOp::Claim { .. })),
+            !chain
+                .ops()
+                .iter()
+                .any(|op| matches!(op, MockOp::Claim { .. })),
             "must not claim when has_baseline RPC fails: {:?}",
             chain.ops()
         );
@@ -427,7 +433,10 @@ mod tests {
         assert_eq!(report.claims_skipped, 1);
         assert_eq!(report.claims_ok, 0);
         assert!(
-            !chain.ops().iter().any(|op| matches!(op, MockOp::Claim { .. })),
+            !chain
+                .ops()
+                .iter()
+                .any(|op| matches!(op, MockOp::Claim { .. })),
             "must not claim when baselined and last_claimed >= leaf score: {:?}",
             chain.ops()
         );

@@ -1,0 +1,39 @@
+{
+  "deploymentManifestHash": "0x05f8b33ddff7855f64c5f38553cadea8648f5d1889ca17624a59f9f507d26491",
+  "note": "MACHINE-WRITTEN by contracts/script/DeployStreamG.s.sol::writeDeploymentPayload on every forge test run. `deploymentManifestHash` here is DECLARED, not computed: it is whatever Params carried into this deploy. The computed value is keccak256(UTF8(RFC8785(payload))) per the Stream G USDT Gas Abstraction and Multi-Wallet Sponsoring spec, section 5.1 (FeeTokenRegistry), and goat-attestor refuses to start when the two disagree (StreamGStartupError::DeploymentManifestHashSelfMismatch). Approval metadata -- this note and deploymentManifestHash itself -- is OUTSIDE `payload` per the same section, so editing the note does not move the digest. `payload.contracts` carries the four roles FeeTokenRegistry commits on chain (address AND runtimeCodeHash); `payload.accounts` carries the deployment's other eight addresses, address only. Every hex value is lowercase per that section, so the bytes hashed are the bytes written. Recompute with `goat-attestor deployment-manifest-hash --payload-json <this file>`.",
+  "payload": {
+    "accounts": {
+      "DESK_OWNER": "0x7fa9385be102ac3eac297483dd6233d62b3e1496",
+      "ENROLLMENT_REGISTRY": "0x104fbc016f4bb334d775a19e8a6510109ac63e00",
+      "FEE_SAFE": "0xd1ccc21678e1b7015a472216b2f501f421645b43",
+      "FEE_TOKEN": "0xddc10602782af652bb913f7bde1fd82981db7dd9",
+      "GOAT_COIN": "0x037eda3adb1198021a9b2e88c22b464fd38db3f3",
+      "POLICY_SAFE": "0x7fa9385be102ac3eac297483dd6233d62b3e1496",
+      "QUOTE_SIGNER": "0xebd5a85005dcc98dabb7a2888de82d43c5a6957e",
+      "RECOVERY_SAFE": "0xb8705214e170151048eff0a1ede1824fff19cb9c"
+    },
+    "chainId": "31337",
+    "contracts": {
+      "FEE_TOKEN_REGISTRY": {
+        "address": "0x7fdb3132ff7d02d8b9e221c61cc895ce9a4bb773",
+        "runtimeCodeHash": "0xfba313e548e577b7511cbde7326a5afb713940d7c9d9de7f46e28df26ebf3b75"
+      },
+      "GATEWAY": {
+        "address": "0x4ff05a443250a64a18c68cedd2122cfdf3872140",
+        "runtimeCodeHash": "0x474ebb2bf11d1462c26e0d5dab9cd8d326b81094d44041f43e31c143976531db"
+      },
+      "SPONSORED_BUY_DESK": {
+        "address": "0xd76ffbd1eff76c510c3a509fe22864688ac3a588",
+        "runtimeCodeHash": "0xb31c7ccddd6577c6d2ac9ebdd3f3cd9f95d320198eade02a9e387277c6d36dae"
+      },
+      "WALLET_SPONSORSHIP_REGISTRY": {
+        "address": "0xfd07c974e33dd1626640ba3a5acf0418faacca7a",
+        "runtimeCodeHash": "0xdd985541ff21871feeeabdcc70ae3ce65a1f7f5b1bbf8249e1aa8ec170b735d4"
+      }
+    },
+    "deploymentVersion": "1",
+    "releaseCommit": "0000000000000000000000000000000000000000",
+    "schemaVersion": "2"
+  },
+  "schemaVersion": 1
+}

@@ -40,6 +40,46 @@ React (src/)                          Rust (src-tauri/src/)
 - **Trade**: voluntary `sell()` to the founder-funded BuyDesk while a session is open. Holding forever is a first-class outcome.
 - Networks: local anvil (31337) and Base Sepolia (84532) only — no mainnet RPC exists in this codebase.
 
+## Pilot release build (Stream C + Stream D0)
+
+**Prereq:** Stream B-live has frozen non-null `src/chain/deployments/84532*.json`. Tunnel hostname from Stream E.
+
+**Stream D decisions (locked):** NSIS+MSI · GitHub Releases/private · minisign on `SHA256SUMS.txt` · **no** Authenticode · **no** updater for pilot.
+
+```powershell
+# Fail-closed gate (must FAIL while 84532 placeholders are null; PASS only after B-live freeze)
+powershell -ExecutionPolicy Bypass -File scripts\release-check.ps1
+
+# After freeze + .env.production.local ready:
+powershell -ExecutionPolicy Bypass -File scripts\release-build.ps1 -StrictEnv
+# → desktop/dist-release/<version>/  (installers + SHA256SUMS.txt [+ .minisig])
+```
+
+Volunteer docs: `docs/VOLUNTEER_INSTALL.md` · Operator: `docs/RELEASE_OPERATOR.md`
+
+```powershell
+cd desktop
+copy .env.production.example .env.production.local
+# edit .env.production.local:
+#   VITE_DEFAULT_NETWORK_ID=84532
+#   VITE_PILOT=1
+#   VITE_ATTESTOR_RELAYER_URL=https://<your-tunnel-host>
+#   optional VITE_CF_ACCESS_CLIENT_ID / _SECRET (speed-bump only)
+#   optional VITE_CSP_EXTRA_CONNECT if using a non-default RPC origin
+
+# Vite loads .env.production* for production mode; tauri beforeBuildCommand
+# runs scripts/inject-relayer-csp.mjs so connect-src includes the tunnel origin.
+cargo tauri build
+```
+
+Honesty: CF Access tokens ship inside the installer and are extractable. They are **bot friction**, not authentication. Relayer H1 signature verify + H2/H2b spend ceilings are load-bearing.
+
+**Vite build-time lock:** every `VITE_*` value is baked into the JS bundle at `cargo tauri build`. Changing the Cloudflare Tunnel hostname or RPC later requires a **rebuild and re-distribute** (no runtime config, no updater). Finalize tunnel + RPC + frozen 84532 addresses **before** the production build.
+
+**CSP:** `inject-relayer-csp.mjs` always preserves Tauri internal schemes (`ipc:`, `tauri.localhost`, `asset:`, …). Do not hand-edit those out of `tauri.conf.json`.
+
+Do **not** cut a volunteer installer (Stream D) until addresses are frozen — there is no auto-updater.
+
 ## Tests
 
 ```powershell

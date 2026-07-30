@@ -4,3 +4,8 @@ state/
 evidence/
 registry.json
 relayer-*.txt
+
+# Per-step stdout captured by run-full-gate.ps1 (the last 20 runs). Machine
+# output, regenerated on every gate run, and the reason a red gate can now name
+# the test that failed.
+gate-logs/

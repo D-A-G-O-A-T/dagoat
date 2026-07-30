@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { formatGoat } from "../chain/format.js";
 import {
+  attributionViewModel,
   formatKeeperFeeDisclosure,
   keeperFeeDisclosureLine,
   readKeeperFeeSafe,
@@ -77,5 +78,19 @@ describe("readKeeperFeeSafe", () => {
     expect(await readKeeperFeeSafe(asNumber, ADDR)).toBe(1234n);
     const asString = { readContract: vi.fn().mockResolvedValue("50000000000000000") };
     expect(await readKeeperFeeSafe(asString, ADDR)).toBe(FEE);
+  });
+});
+
+describe("attributionViewModel (spec §7: dev detail hidden, action only when needed)", () => {
+  const base = { bound: true, enrolled: true, usernameMismatch: false };
+  it("no action CTA when bound + enrolled + names match", () => {
+    expect(attributionViewModel(base).needsAction).toBe(false);
+  });
+  it.each([
+    [{ ...base, bound: false }],
+    [{ ...base, enrolled: false }],
+    [{ ...base, usernameMismatch: true }],
+  ])("action CTA appears when something needs attention %#", (s) => {
+    expect(attributionViewModel(s).needsAction).toBe(true);
   });
 });

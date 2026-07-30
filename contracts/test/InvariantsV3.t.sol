@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {EnrollmentRegistry} from "../src/EnrollmentRegistry.sol";
 import {GoatCoin} from "../src/GoatCoin.sol";
 import {HoldbackEscrow} from "../src/HoldbackEscrow.sol";
 import {EpochSettlement} from "../src/EpochSettlement.sol";
+import {FounderResolver} from "../src/FounderResolver.sol";
 import {WorkerBinding} from "../src/WorkerBinding.sol";
 
-/// Invariant fuzz suite for optimistic epoch settlement (spec 2026-07-13):
+/// Invariant fuzz suite for optimistic epoch settlement (the
+/// "GOAT Optimistic Settlement — Consolidated Design" spec):
 /// EpochSettlement + HoldbackEscrow + GoatCoin's settlement-mint path.
 /// Drives full propose -> warp -> watcher-confirm -> finalize -> claim
 /// cycles over a bounded worker pool and cross-checks the Handler's own
@@ -39,6 +41,18 @@ contract Handler is Test {
     uint256 public sumHoldback;
     uint256 public sumHoldbackOutstanding;
     uint256 public claimsSucceededOnNonFinalized;
+
+    /// Holdback jobIds that a claim ACTUALLY credited, captured from the escrow's
+    /// `Credited` log rather than re-derived here. hReleaseHoldback releases only these,
+    /// so the campaign follows whatever jobId convention production uses instead of
+    /// carrying its own copy of it — see _recordCreditedJobs.
+    struct CreditedJob {
+        bytes32 jobId;
+        address worker;
+    }
+
+    CreditedJob[] public creditedJobs;
+    uint256 public releasesPerformed;
 
     // Disjoint epoch-id namespace for epochs deliberately left in Proposed
     // status (proposed, never confirmed/finalized) so hTryClaimNonFinalized
@@ -244,6 +258,13 @@ contract Handler is Test {
 
         if (epochs.length == 0) return;
         uint256 epoch = epochs[scoreSeed % epochs.length];
+        // No holdback-release pre-condition here, deliberately. The epoch lane now
+        // credits holdback under a per-(epoch,worker) jobId, so a release performed by
+        // hReleaseHoldback can no longer reach any other worker's credit, and
+        // `AlreadyReleased()` is unreachable from claimPayout. With fail_on_revert
+        // = true, an interleaving of hReleaseHoldback and hClaim that reintroduced the
+        // shared-jobId lockout would now fail the campaign instead of being screened
+        // out -- which is the point of removing the guard that used to sit here.
         address[] memory ws = epochWorkers[epoch];
         uint256[] memory scores = epochScores[epoch];
         uint256 idx = workerSeed % ws.length;
@@ -261,7 +282,9 @@ contract Handler is Test {
         // Give the time-based rate cap room to mint (capPerDay * elapsed / 1 days).
         vm.warp(block.timestamp + 1 hours);
         bool alreadyClaimed = settle.claimed(epoch, w);
+        vm.recordLogs();
         settle.claimPayout(epoch, w, score, proof);
+        _recordCreditedJobs();
 
         uint256 newWatermark = settle.lastClaimedCumulative(w);
         maxSeen[w] = newWatermark;
@@ -280,24 +303,56 @@ contract Handler is Test {
         sumHoldbackOutstanding += hb;
     }
 
-    /// Safe-triggered release of a finalized epoch's holdback (mirrors the
-    /// worker-property release path so escrow accounting is exercised on
-    /// both the credit and release sides, not just credit).
-    function hReleaseHoldback(uint256 epochSeed) external {
-        if (epochs.length == 0) return;
-        uint256 epoch = epochs[epochSeed % epochs.length];
-        bytes32 jobId = bytes32(epoch);
-        if (escrow.jobReleased(jobId)) return;
+    /// Appends every jobId the escrow was just credited under, taken from the
+    /// `Credited` logs of the claim that ran immediately before. Reading the id
+    /// off the event instead of recomputing `keccak256(abi.encode(epoch, worker))`
+    /// is what makes the campaign a real control on the per-(epoch,worker) jobId:
+    /// a handler that re-derived the id would simply target a nonexistent job if
+    /// production regressed to a shared id, release nothing, and stay green.
+    function _recordCreditedJobs() internal {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics.length == 3 && logs[i].topics[0] == HoldbackEscrow.Credited.selector) {
+                creditedJobs.push(
+                    CreditedJob({
+                        jobId: logs[i].topics[1],
+                        worker: address(uint160(uint256(logs[i].topics[2])))
+                    })
+                );
+            }
+        }
+    }
 
+    /// Safe-triggered release of a holdback job that a claim really created
+    /// (mirrors the worker-property release path so escrow accounting is exercised
+    /// on both the credit and release sides, not just credit). Under the
+    /// per-(epoch,worker) jobId this releases exactly one worker, leaving every
+    /// co-worker of that epoch with their own still-claimable job — and hClaim
+    /// deliberately carries no guard against that interleaving, so if a release
+    /// could ever reach a co-worker's pending credit their next claim would revert
+    /// AlreadyReleased and fail_on_revert = true would fail the campaign.
+    function hReleaseHoldback(uint256 seed) external {
+        if (creditedJobs.length == 0) return;
+        CreditedJob memory cj = creditedJobs[seed % creditedJobs.length];
+        if (escrow.jobReleased(cj.jobId)) return;
+
+        // Sum across the whole worker pool, not just cj.worker: under a shared-jobId
+        // regression one id holds several workers, and the outstanding mirror must stay
+        // exact so the campaign fails on the real AlreadyReleased revert rather than on
+        // a bogus solvency mismatch. Under the shipped per-worker id exactly one term
+        // is non-zero.
         uint256 held;
         for (uint256 i = 0; i < WORKER_COUNT; i++) {
-            held += escrow.holdbackOf(jobId, workers[i]);
+            held += escrow.holdbackOf(cj.jobId, workers[i]);
         }
+        // Already drained by a slash/release of the same id: `_release` would revert
+        // NothingCredited. Pre-condition, not a suppressed post-condition.
         if (held == 0) return;
 
         vm.prank(safe);
-        escrow.release(jobId);
+        escrow.release(cj.jobId);
         sumHoldbackOutstanding -= held;
+        releasesPerformed++;
     }
 }
 
@@ -312,6 +367,7 @@ contract InvariantsV3Test is Test {
     address safe = makeAddr("safev3");
     address reserve = makeAddr("reservev3");
     address watcher = makeAddr("watcherv3");
+    address founder = makeAddr("founderv3");
 
     uint16 constant HB_BPS = 500; // 5% — founder-locked holdback (2026-07-13)
     uint64 constant BACKSTOP = 7 days; // founder-locked backstop
@@ -331,6 +387,11 @@ contract InvariantsV3Test is Test {
         goat = new GoatCoin("GoatCoin", "GOAT", safe, reg);
         escrow = new HoldbackEscrow(safe, goat, reserve);
         binding = new WorkerBinding();
+        // Resolver live from construction (see DeployEpochSettlement): predict the
+        // settlement's CREATE address so the mutually-immutable pair can be wired at deploy.
+        // The handler never drives the dispute path, so this does not change fuzz coverage.
+        address predictedSettle = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        FounderResolver resolver = new FounderResolver(founder, predictedSettle);
         // CAP_PER_DAY large so invariant fuzz still exercises payouts under time cap
         settle = new EpochSettlement(
             safe,
@@ -345,9 +406,10 @@ contract InvariantsV3Test is Test {
             WINDOW,
             PBOND,
             CBOND,
-            address(0),
+            address(resolver),
             watcher
         );
+        assertEq(address(settle), predictedSettle, "CREATE address prediction drifted");
 
         vm.startPrank(safe);
         escrow.setVault(address(settle));

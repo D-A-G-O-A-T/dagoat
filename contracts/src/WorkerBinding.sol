@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {EIP712} from "openzeppelin-contracts/contracts/utils/cryptography/EIP712.sol";
 import {ECDSA} from "openzeppelin-contracts/contracts/utils/cryptography/ECDSA.sol";
 
-/// Minimal wallet ↔ GOAT-username registry (FAH attribution plan 2026-07-14 §2b / T1–T2).
+/// Minimal wallet ↔ GOAT-username registry (the "FAH Attribution — Implementation Plan", §2b / T1–T2).
 /// Uniqueness + set-once only — NO bonds, NO challenge lane. Baseline lives in EpochSettlement
 /// as the first claimPayout watermark (mint 0). Rebind forbidden (INV-6).
 ///

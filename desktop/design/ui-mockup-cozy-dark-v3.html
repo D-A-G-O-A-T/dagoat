@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GoatAPP UI mockup — cozy dark v3 (approved reference)</title>
+<style>
+  /* Approved reference mockup (approved 2026-07-18). This file IS the
+     reference — nothing else needs to be resolved to read it.
+     Mood: cozy dark (dusk gradient + ember warmth)
+     Glass: blur(16px) saturate(1.3), rgba(28,26,38,.42), hairline rgba(255,255,255,.13)
+     Hover: scale(1.025) + shadow grows, cubic-bezier(.25,.1,.25,1) 300ms (Apple ease-in-out)
+     Key values (title, username, team, claimable): accent green #3ecf8e
+     Placeholder "G" chip = brand/goat-mark-cream.svg in the real app */
+  html, body { margin: 0; padding: 0; background: #101018; min-height: 100vh;
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center; }
+  .frame { width: 680px; max-width: 94vw; }
+
+  .mock { border-radius: 16px; overflow: hidden; position: relative;
+    border: 0.5px solid rgba(255,255,255,.08); }
+  .bg { position: absolute; inset: 0;
+    background-image: linear-gradient(130deg,#191b2a,#241f33,#33262b,#3c2a24,#241f33,#191b2a);
+    background-size: 300% 300%; animation: drift 16s ease-in-out infinite; }
+  @keyframes drift {
+    0%   { background-position: 0% 20%; }
+    50%  { background-position: 100% 80%; }
+    100% { background-position: 0% 20%; }
+  }
+  .inner { position: relative; padding: 18px 20px 20px; }
+
+  .glass { backdrop-filter: blur(16px) saturate(1.3);
+    -webkit-backdrop-filter: blur(16px) saturate(1.3);
+    border-radius: 14px; background: rgba(28,26,38,.42);
+    border: 0.5px solid rgba(255,255,255,.13);
+    box-shadow: 0 8px 22px rgba(0,0,0,.32);
+    transition: transform .3s cubic-bezier(.25,.1,.25,1),
+                box-shadow .3s cubic-bezier(.25,.1,.25,1); }
+  .glass:hover { transform: scale(1.025); box-shadow: 0 18px 44px rgba(0,0,0,.55); }
+
+  .header { display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; margin-bottom: 12px; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .mark { width: 28px; height: 28px; border-radius: 8px; background: #f0e6d2;
+    color: #26221c; display: flex; align-items: center; justify-content: center;
+    font-weight: 500; font-size: 13px; }
+  .title { font-weight: 500; font-size: 14px; color: #3ecf8e; }
+
+  .switch-row { display: flex; align-items: center; gap: 8px; }
+  .switch-label { font-size: 12px; color: #a99f8c; }
+  .switch { width: 40px; height: 24px; border-radius: 12px; position: relative;
+    cursor: pointer; background: #3ecf8e; flex: none;
+    transition: background .3s cubic-bezier(.25,.1,.25,1); }
+  .switch i { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+    border-radius: 50%; background: #fff;
+    transition: left .3s cubic-bezier(.25,.1,.25,1); }
+  .switch.on i { left: 19px; }
+  .switch:not(.on) { background: #4a4557; }
+
+  .card { padding: 18px; margin-bottom: 12px; }
+  .card-title { margin: 0 0 4px; font-size: 15px; font-weight: 500; color: #f0e6d2; }
+  .card-sub { margin: 0 0 14px; font-size: 12.5px; color: #a99f8c; }
+  .cta { border: none; cursor: pointer; font-size: 14px; font-weight: 500;
+    padding: 11px 22px; border-radius: 12px; background: #3ecf8e; color: #0e2419;
+    box-shadow: 0 6px 18px rgba(62,207,142,.3);
+    transition: all .3s cubic-bezier(.25,.1,.25,1); }
+  .cta:hover { transform: scale(1.05); }
+  .cta:active { transform: scale(0.96); }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .stat { padding: 12px 14px; }
+  .stat-label { margin: 0; font-size: 11.5px; color: #a99f8c; }
+  .stat-value { margin: 2px 0 0; font-size: 13px; font-weight: 500; color: #3ecf8e; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="mock">
+    <div class="bg"></div>
+    <div class="inner">
+      <div class="glass header">
+        <div class="brand">
+          <div class="mark">G</div>
+          <span class="title">D.A. G.O.A.T.</span>
+        </div>
+        <div class="switch-row">
+          <span class="switch-label">Earn GOAT</span>
+          <div class="switch on" onclick="this.classList.toggle('on')"><i></i></div>
+        </div>
+      </div>
+      <div class="glass card">
+        <p class="card-title">Contribute</p>
+        <p class="card-sub">Folding@home &middot; protein research &middot; GPU idle time</p>
+        <button class="cta">Start contributing</button>
+      </div>
+      <div class="stats">
+        <div class="glass stat">
+          <p class="stat-label">Username</p>
+          <p class="stat-value">GOAT-charlie</p>
+        </div>
+        <div class="glass stat">
+          <p class="stat-label">Team &middot; locked</p>
+          <p class="stat-value">GOAT 1068318</p>
+        </div>
+        <div class="glass stat">
+          <p class="stat-label">Claimable &middot; testnet</p>
+          <p class="stat-value">12.4 GOAT</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

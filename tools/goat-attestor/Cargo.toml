@@ -24,7 +24,10 @@ anyhow = "1"
 hex = "0.4"
 tiny-keccak = { version = "2", features = ["keccak"] }
 clap = { version = "4", features = ["derive", "env"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+# "signal" is what makes Stream G's graceful shutdown real rather than
+# decorative: without it there is no way to observe Ctrl-C/SIGTERM, so the
+# cancellation token would have no producer. See `stream_g::runtime`.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "signal"] }
 axum = "0.7"
 tower = "0.5"
 tower-http = { version = "0.5", features = ["trace", "cors"] }
@@ -44,6 +47,13 @@ alloy = { version = "2", features = [
 ] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 url = "2"
+# Stream G (TARGET/post-pilot; feature-disabled scaffold — see src/stream_g).
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+chacha20poly1305 = "0.10"
+zeroize = "1"
+hmac = "0.12"
+rand = "0.8"
+fs2 = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

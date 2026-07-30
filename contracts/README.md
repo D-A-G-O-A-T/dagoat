@@ -8,7 +8,7 @@ contracts are now implemented: `WorkMinter` (GOAT minted from verified
 work units — no USDT cap; manifestRoot replay-guarded) and `BuyDesk`
 (voluntary `sell()` at a posted bid; owner-funded; budget-bounded, no
 solvency-vs-supply promise) — spec:
-`docs/superpowers/specs/2026-07-11-goatcoin-freemarket-mint-design.md`,
+the "GoatCoin Free-Market Mint (v2) — Design Spec",
 deploy: `script/DeployFreeMarket.s.sol`, runbook: `SEASON0_UI_RUNBOOK.md`.
 `JobVault`/`RedemptionDesk` remain in-repo as the retired **backed pilot**
 (mint ≤ escrow) for history and the live Sepolia v1 instances.
@@ -17,7 +17,7 @@ holder is ever forced to sell.
 
 - Build: `forge build` · Test: `forge test` · Lint: `forge fmt --check`
 - Deploy (Base Sepolia ONLY): see `script/Deploy.s.sol`
-- Spec: `docs/superpowers/specs/2026-07-11-goatcoin-onchain-wallet-design.md`
+- Spec: the "GoatCoin On-Chain Token + Wallet — Design Spec"
 
 ## Base Sepolia deployment (Season 0 rehearsal)
 

@@ -4,15 +4,16 @@ import * as THREE from "three";
 
 /**
  * Right-side FAH 3D preview using the **same on-disk visualization data** that
- * FAH Web Control (fah-web-client-bastet) renders:
+ * FAH Web Control renders:
  *   work/<unit>/viewerTop.json   — topology (elements)
  *   work/<unit>/viewerFrameN.json — atom coordinates
  *
  * Progress % is driven by the FAH unit's `wu_progress` (surfaced as
- * `progress_pct`, e.g. "25.5") — aligned with Web Control's Progress column.
+ * `progress_pct`). We do not invent coordinates; if no frames exist yet the
+ * canvas stays empty with an honest message.
  *
- * We do not invent coordinates; if no frames exist yet the canvas is empty
- * with an honest message + link to official Web Control.
+ * Rendering uses THREE.Points (one BufferGeometry) so large proteins stay
+ * responsive — per-atom Mesh spheres froze the webview on real FAH WUs.
  */
 
 const ELEMENT_COLORS = {
@@ -43,10 +44,26 @@ function unitLabel(unit) {
   const pct =
     unit.progress_pct != null
       ? unit.progress_pct
-      : (Number(unit.progress) <= 1
-          ? (Number(unit.progress) * 100).toFixed(1)
-          : Number(unit.progress).toFixed(1));
+      : Number(unit.progress) <= 1
+        ? (Number(unit.progress) * 100).toFixed(1)
+        : Number(unit.progress).toFixed(1);
   return { res, proj, num, pct, fullId: unit.id, state: unit.state || "" };
+}
+
+/** Normalize Tauri/serde payload (snake_case or camelCase). */
+function normalizeViz(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const positions = raw.positions ?? raw.Positions;
+  if (!Array.isArray(positions) || positions.length === 0) return null;
+  return {
+    work_dir: raw.work_dir ?? raw.workDir ?? "",
+    unit_folder: raw.unit_folder ?? raw.unitFolder ?? "",
+    frame_index: Number(raw.frame_index ?? raw.frameIndex ?? 0),
+    frame_count: Number(raw.frame_count ?? raw.frameCount ?? 0),
+    elements: raw.elements ?? [],
+    atomic_numbers: raw.atomic_numbers ?? raw.atomicNumbers ?? [],
+    positions,
+  };
 }
 
 export default function FahPreview({ status, folding }) {
@@ -54,10 +71,11 @@ export default function FahPreview({ status, folding }) {
   const sceneRef = useRef(null);
   const [viz, setViz] = useState(null);
   const [vizError, setVizError] = useState("");
+  const [vizLoading, setVizLoading] = useState(false);
   const [projectInfo, setProjectInfo] = useState(null);
 
   const units = status?.units ?? [];
-  // Prefer a RUN/RUNNING unit; else first unit.
+  // Prefer a RUN/RUNNING unit; else first unit with an id.
   const primary =
     units.find((u) => /run/i.test(String(u.state || ""))) ?? units[0] ?? null;
   const label = unitLabel(primary);
@@ -68,16 +86,21 @@ export default function FahPreview({ status, folding }) {
     let cancelled = false;
     const tick = async () => {
       try {
-        const snap = await invoke("backend_fah_viz");
-        if (!cancelled) {
-          setViz(snap ?? null);
-          setVizError("");
-        }
+        if (!cancelled) setVizLoading(true);
+        const args = {};
+        if (primary?.id) args.unitId = primary.id;
+        const snap = await invoke("backend_fah_viz", args);
+        if (cancelled) return;
+        const norm = normalizeViz(snap);
+        setViz(norm);
+        setVizError("");
       } catch (err) {
         if (!cancelled) {
           setViz(null);
           setVizError(String(err?.message || err));
         }
+      } finally {
+        if (!cancelled) setVizLoading(false);
       }
     };
     tick();
@@ -111,32 +134,32 @@ export default function FahPreview({ status, folding }) {
     };
   }, [projectId]);
 
-  // Three.js scene: render real FAH atom coordinates when available.
+  // Three.js scene shell (once).
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
 
-    const width = mount.clientWidth || 320;
-    const height = mount.clientHeight || 320;
+    const width = Math.max(mount.clientWidth || 320, 64);
+    const height = Math.max(mount.clientHeight || 280, 64);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0b1220);
-    const camera = new THREE.PerspectiveCamera(45, width / height, 0.01, 500);
+    const camera = new THREE.PerspectiveCamera(45, width / height, 0.01, 2000);
     camera.position.set(0, 0, 40);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setClearColor(0x0a0c14, 1);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setSize(width, height);
+    renderer.setSize(width, height, false);
     mount.appendChild(renderer.domElement);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.65));
-    const key = new THREE.DirectionalLight(0xffffff, 0.9);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const key = new THREE.DirectionalLight(0xffffff, 0.55);
     key.position.set(20, 30, 40);
     scene.add(key);
 
     const atomGroup = new THREE.Group();
     scene.add(atomGroup);
-    sceneRef.current = { scene, camera, renderer, atomGroup };
+    sceneRef.current = { scene, camera, renderer, atomGroup, points: null };
 
     let raf = 0;
     const animate = () => {
@@ -147,17 +170,29 @@ export default function FahPreview({ status, folding }) {
     animate();
 
     const onResize = () => {
-      const w = mount.clientWidth || 320;
-      const h = mount.clientHeight || 320;
+      const w = Math.max(mount.clientWidth || 320, 64);
+      const h = Math.max(mount.clientHeight || 280, 64);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
+      renderer.setSize(w, h, false);
     };
     window.addEventListener("resize", onResize);
+    // Layout may settle after first paint (sticky column).
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(onResize)
+        : null;
+    ro?.observe(mount);
 
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", onResize);
+      ro?.disconnect();
+      const pts = sceneRef.current?.points;
+      if (pts) {
+        pts.geometry?.dispose?.();
+        pts.material?.dispose?.();
+      }
       while (atomGroup.children.length) {
         const c = atomGroup.children.pop();
         c.geometry?.dispose?.();
@@ -171,83 +206,88 @@ export default function FahPreview({ status, folding }) {
     };
   }, []);
 
-  // Update atom mesh when viz snapshot changes.
+  // Update point cloud when viz snapshot changes.
   useEffect(() => {
     const ctx = sceneRef.current;
-    if (!ctx || !viz?.positions?.length) return;
-    const { atomGroup, camera } = ctx;
+    if (!ctx) return;
+    const { atomGroup, camera, renderer, scene } = ctx;
 
+    // Clear previous points.
     while (atomGroup.children.length) {
       const c = atomGroup.children.pop();
       c.geometry?.dispose?.();
       c.material?.dispose?.();
     }
+    ctx.points = null;
+
+    if (!viz?.positions?.length) {
+      renderer.render(scene, camera);
+      return;
+    }
 
     const positions = viz.positions;
     const elements = viz.elements || [];
-    // Subsample very large proteins for GPU sanity (still real FAH coords).
-    const stride = positions.length > 8000 ? Math.ceil(positions.length / 8000) : 1;
+    const n = positions.length;
 
-    let cx = 0,
-      cy = 0,
-      cz = 0,
-      n = 0;
-    for (let i = 0; i < positions.length; i += stride) {
-      cx += positions[i][0];
-      cy += positions[i][1];
-      cz += positions[i][2];
-      n += 1;
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (let i = 0; i < n; i++) {
+      const p = positions[i];
+      cx += Number(p[0]) || 0;
+      cy += Number(p[1]) || 0;
+      cz += Number(p[2]) || 0;
     }
-    cx /= n || 1;
-    cy /= n || 1;
-    cz /= n || 1;
+    cx /= n;
+    cy /= n;
+    cz /= n;
 
-    const geo = new THREE.SphereGeometry(0.18, 8, 8);
-    for (let i = 0; i < positions.length; i += stride) {
-      const el = elements[i] || "?";
-      const mat = new THREE.MeshStandardMaterial({
-        color: colorForElement(el),
-        metalness: 0.15,
-        roughness: 0.55,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(
-        positions[i][0] - cx,
-        positions[i][1] - cy,
-        positions[i][2] - cz
-      );
-      atomGroup.add(mesh);
-    }
-
-    // Fit camera to structure radius.
+    const posArr = new Float32Array(n * 3);
+    const colArr = new Float32Array(n * 3);
+    const color = new THREE.Color();
     let maxR = 1;
-    for (let i = 0; i < positions.length; i += stride) {
-      const dx = positions[i][0] - cx;
-      const dy = positions[i][1] - cy;
-      const dz = positions[i][2] - cz;
-      maxR = Math.max(maxR, Math.sqrt(dx * dx + dy * dy + dz * dz));
+    for (let i = 0; i < n; i++) {
+      const p = positions[i];
+      const x = (Number(p[0]) || 0) - cx;
+      const y = (Number(p[1]) || 0) - cy;
+      const z = (Number(p[2]) || 0) - cz;
+      posArr[i * 3] = x;
+      posArr[i * 3 + 1] = y;
+      posArr[i * 3 + 2] = z;
+      maxR = Math.max(maxR, Math.sqrt(x * x + y * y + z * z));
+      color.setHex(colorForElement(elements[i]));
+      colArr[i * 3] = color.r;
+      colArr[i * 3 + 1] = color.g;
+      colArr[i * 3 + 2] = color.b;
     }
-    camera.position.set(0, maxR * 0.15, maxR * 2.4);
-    camera.near = maxR * 0.01;
-    camera.far = maxR * 20;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(posArr, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(colArr, 3));
+
+    const mat = new THREE.PointsMaterial({
+      size: Math.max(0.35, maxR * 0.018),
+      vertexColors: true,
+      sizeAttenuation: true,
+    });
+    const points = new THREE.Points(geo, mat);
+    atomGroup.add(points);
+    ctx.points = points;
+
+    camera.position.set(0, maxR * 0.12, maxR * 2.6);
+    camera.near = Math.max(0.01, maxR * 0.005);
+    camera.far = Math.max(100, maxR * 25);
     camera.updateProjectionMatrix();
     camera.lookAt(0, 0, 0);
+    renderer.render(scene, camera);
   }, [viz]);
 
+  const atomCount = viz?.positions?.length ?? 0;
+
   return (
-    <aside className="fah-preview" aria-label="Folding@home 3D work preview">
+    <aside className="fah-preview glass" aria-label="Folding@home 3D work preview">
       <div className="fah-preview__header">
         <h3>3D work preview</h3>
-        <p className="muted">
-          Real FAH frames (viewerTop / viewerFrame) — same data as{" "}
-          <a
-            href="https://github.com/foldingathome/fah-web-client-bastet"
-            target="_blank"
-            rel="noreferrer"
-          >
-            fah-web-client-bastet
-          </a>
-        </p>
       </div>
 
       <div className="fah-preview__canvas" ref={mountRef} />
@@ -276,16 +316,20 @@ export default function FahPreview({ status, folding }) {
           </p>
         )}
 
-        {viz ? (
+        {viz && atomCount > 0 ? (
           <p className="muted">
-            Frame {viz.frame_index + 1}/{viz.frame_count} · {viz.positions?.length ?? 0} atoms
-            (FAH work/{viz.unit_folder})
+            Frame {viz.frame_index + 1}/{viz.frame_count} · {atomCount} atoms
+            {viz.unit_folder ? ` (work/${viz.unit_folder.slice(0, 12)}…)` : ""}
           </p>
         ) : (
           <p className="placeholder-note">
             {vizError
               ? `Viz unavailable: ${vizError}`
-              : "No viewer frames on disk yet — FAH writes them while the unit runs."}
+              : vizLoading
+                ? "Loading FAH viewer frames…"
+                : folding || label
+                  ? "No viewer frames on disk yet — FAH writes them after the core starts (often a few minutes into RUN)."
+                  : "No viewer frames — start contributing first."}
           </p>
         )}
 

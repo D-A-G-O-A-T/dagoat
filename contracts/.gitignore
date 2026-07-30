@@ -2,3 +2,28 @@ cache/
 out/
 broadcast/
 .env
+
+# Per-call scratch directories for the anvil hazard harness's deploys
+# (tools/goat-attestor/src/stream_g/anvil_harness.rs::ScratchDeploymentsDir).
+# They live under deployments/ because foundry.toml's fs_permissions grant
+# `vm.writeJson` write access to that subtree and nowhere else, and they are
+# removed on drop; this entry only covers a run killed mid-deploy.
+deployments/.harness-*/
+
+# Per-test scratch directories for the same reason one level in: forge runs a
+# contract's test functions concurrently, so DeployStreamGTest's payload test
+# publishes into its own directory instead of racing
+# test_writes_only_31337_stream_g_json on the committed
+# deployments/31337.stream-g{,.payload}.json pair (vm.writeJson truncates before
+# it writes). That one test keeps the committed pair as its output because
+# regenerating it on every `forge test` is what makes a contract edit surface as
+# a byte-identity failure against tools/goat-attestor/fixtures/.
+#
+# The name carries a millisecond timestamp and a random suffix because
+# `forge test` is not one process: two concurrent runs (a terminal and
+# run-full-gate.ps1 step 4) used to share one fixed path, and each one DELETED
+# it recursively on entry -- so one run's vm.writeJson landed while the other
+# was between its removeDir and its createDir (`os error 3`). Removed by a
+# passing run, kept by a failing one so the documents can be inspected. See
+# _scratchDeploymentsDir in test/DeployStreamG.t.sol.
+deployments/.streamg-t-*/

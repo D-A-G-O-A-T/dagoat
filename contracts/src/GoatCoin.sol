@@ -8,7 +8,8 @@ import {EnrollmentRegistry} from "./EnrollmentRegistry.sol";
 
 /// GoatCoin (spec §2.2): ERC-20 + permit + pausable. While `restricted`,
 /// transfers require EnrollmentRegistry approval (mint/burn exempt).
-/// Minters are JobVault instances only — there is no other mint path.
+/// Minters are addresses authorized via `setMinter` (Season-0: EpochSettlement and/or
+/// WorkMinter). There is no unrestricted public mint path.
 /// Pause is the S5 incident-response control: an honest pilot-phase
 /// centralized power, documented, removed with progressive sovereignty.
 contract GoatCoin is ERC20, ERC20Permit, ERC20Pausable {

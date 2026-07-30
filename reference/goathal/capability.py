@@ -2,7 +2,8 @@
 CapabilityRecord / DeviceCapability wire format, hash-chain, density signal (F6), and
 validity predicate (PROTOCOL layer — device-agnostic).
 
-Spec A (design note 10), with two corrections found in implementation:
+Mirrors the Rust ground truth in `goatcoin-rs/crates/goat-protocol/` (Spec A), with two
+corrections found in implementation:
   * `observed_gpu_equiv` is renamed `observed_compute_equiv` (reference-device-
     equivalents). The original name embeds a device type and violates the standing
     invariant. Density is measured in reference-device-equivalents, not any one device.

@@ -6,9 +6,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args) => invoke(...args) }));
 
-const { listWallets, createWallet, importWallet, unlock, lock, activeWallet, removeWallet } = await import(
-  "./wallet.js"
-);
+const {
+  listWallets,
+  createWallet,
+  importWallet,
+  unlock,
+  lock,
+  activeWallet,
+  removeWallet,
+  getUnlockProgress,
+} = await import("./wallet.js");
+const { shouldRemask, sortWalletsActiveFirst } = await import("../tabs/Wallet.jsx");
 
 beforeEach(() => {
   invoke.mockReset();
@@ -54,6 +62,37 @@ describe("command wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("wallet_active");
   });
 
+  it("unlock progress stays pending mid-flight (survives Wallet tab remount)", async () => {
+    let resolveUnlock;
+    invoke.mockImplementation((cmd) => {
+      if (cmd === "wallet_unlock") {
+        return new Promise((resolve) => {
+          resolveUnlock = resolve;
+        });
+      }
+      return Promise.resolve({ name: "a", address: "0xabcdef0123456789" });
+    });
+    const pending = unlock("a", "pw12345678");
+    expect(getUnlockProgress().status).toBe("pending");
+    resolveUnlock({ name: "a", address: "0xabcdef0123456789" });
+    await pending;
+    expect(getUnlockProgress().status).toBe("success");
+    expect(getUnlockProgress().message).toMatch(/Unlocked 0xabcd/i);
+  });
+
+  it("unlock progress records error without dropping pending mid-flight", async () => {
+    invoke.mockImplementation((cmd) => {
+      if (cmd === "wallet_unlock") return Promise.reject("wrong password");
+      return Promise.resolve(null);
+    });
+    await expect(unlock("a", "bad")).rejects.toBe("wrong password");
+    expect(getUnlockProgress()).toEqual({
+      status: "error",
+      message: "wrong password",
+      name: "a",
+    });
+  });
+
   it("lock invokes wallet_lock then refreshes", async () => {
     await lock();
     expect(invoke).toHaveBeenCalledWith("wallet_lock");
@@ -64,5 +103,32 @@ describe("command wrappers", () => {
     await removeWallet("a", "pw12345678");
     expect(invoke).toHaveBeenCalledWith("wallet_remove", { name: "a", password: "pw12345678" });
     expect(invoke).toHaveBeenCalledWith("wallet_active");
+  });
+});
+
+describe("sortWalletsActiveFirst (T27 P8: active wallet lists first)", () => {
+  const list = [
+    { name: "a", address: "0xA" },
+    { name: "b", address: "0xB" },
+    { name: "c", address: "0xC" },
+  ];
+  it("moves the active wallet to the front and keeps the rest in stored order", () => {
+    expect(sortWalletsActiveFirst(list, "b").map((w) => w.name)).toEqual(["b", "a", "c"]);
+    expect(list.map((w) => w.name)).toEqual(["a", "b", "c"]); // pure — input untouched
+  });
+  it("leaves the order unchanged when the active name is unknown or absent", () => {
+    expect(sortWalletsActiveFirst(list, "nope").map((w) => w.name)).toEqual(["a", "b", "c"]);
+    expect(sortWalletsActiveFirst(list, undefined).map((w) => w.name)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("shouldRemask (D1: auto re-mask on lock/switch)", () => {
+  it("remasks when the wallet locks or switches", () => {
+    expect(shouldRemask("0xA", null)).toBe(true); // locked
+    expect(shouldRemask("0xA", "0xB")).toBe(true); // switched
+  });
+  it("stays as-is while the same wallet stays unlocked", () => {
+    expect(shouldRemask("0xA", "0xA")).toBe(false);
+    expect(shouldRemask(null, "0xA")).toBe(false); // fresh unlock: still masked by default
   });
 });
