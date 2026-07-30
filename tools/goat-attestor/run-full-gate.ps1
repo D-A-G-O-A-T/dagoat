@@ -984,6 +984,21 @@ try {
 
     # -----------------------------------------------------------------------
     # STEP 2 -- clippy
+    #
+    # THE VERSION IS IN THE DETAIL STRING, and it is there because of a measured
+    # incident rather than for decoration. On 2026-07-30 the first public CI run
+    # failed to COMPILE this crate on `useless_borrows_in_formatting` at
+    # quotes.rs:1908 and :1910, while this step reported "no warnings" on the same
+    # commit. The commands were byte-identical -- `cargo clippy --all-targets --
+    # -D warnings` on both sides. The difference was the TOOLCHAIN: the dev machine
+    # had clippy 0.1.96 (rustc 1.96.1) and the runner's `dtolnay/rust-toolchain
+    # @stable` resolved to 1.97.0, which fires that lint on a shape 1.96 ignores.
+    #
+    # So a green row here means "clean under THIS clippy", never "clean under the
+    # clippy CI will use". Printing the version is what makes a gate-green /
+    # CI-red divergence diagnosable in one glance instead of an hour. The real fix
+    # is to pin the toolchain on both sides so they cannot drift; that is a
+    # founder decision about how fast to take new lints, and it is not taken here.
     # -----------------------------------------------------------------------
     Write-Banner '2/10  cargo clippy --all-targets -- -D warnings'
     $r = Invoke-Tool -Exe 'cargo' `
@@ -992,7 +1007,15 @@ try {
     if ($r.ExitCode -ne 0) {
         Fail-Step -Name 'cargo clippy' -Reason "clippy exited $($r.ExitCode)"
     }
-    Add-StepResult -Name 'cargo clippy' -Status 'PASS' -Detail 'no warnings'
+    # Best-effort: a version this gate could not read must not fail a step that
+    # passed, so an unreadable version degrades the DETAIL and nothing else.
+    $clippyVer = 'version unknown'
+    try {
+        $cv = (& cargo clippy --version 2>$null | Select-Object -First 1)
+        if (-not [string]::IsNullOrWhiteSpace($cv)) { $clippyVer = ([string]$cv).Trim() }
+    } catch { $clippyVer = 'version unknown' }
+    Add-StepResult -Name 'cargo clippy' -Status 'PASS' `
+        -Detail "no warnings under ${clippyVer} (CI floats @stable -- a newer clippy can red CI on a lint this cannot see)"
 
     # -----------------------------------------------------------------------
     # STEP 3 -- the live-Anvil hazard suite

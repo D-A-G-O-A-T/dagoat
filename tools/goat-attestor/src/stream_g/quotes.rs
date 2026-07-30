@@ -1905,9 +1905,16 @@ fn canonical_body_string(
         fee_amount,
         req.v1_nonce,
         req.v1_deadline,
-        &req.v1_signature_hex,
+        // NO `&` ON THESE TWO, and the reason is a CI red rather than taste.
+        // clippy 1.97.0's `useless_borrows_in_formatting` rejects a borrow in a
+        // format argument; 1.96.1 does not fire on this shape, so the local gate
+        // was green while the runner failed to compile. `Display` for `String`
+        // and for `&String` emit identical text, so this is byte-identical in a
+        // path that feeds `body_hash_hex` and the idempotency key -- which is the
+        // only reason it is safe to touch at all. Do not "tidy" a borrow back in.
+        req.v1_signature_hex,
         req.link_nonce,
-        &req.link_signature_hex,
+        req.link_signature_hex,
     )
 }
 
