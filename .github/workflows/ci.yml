@@ -244,8 +244,83 @@ jobs:
           workspaces: tools/goat-attestor
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
-      - name: test
-        run: cargo test
+      # THIS STEP IS EXPECTED TO FAIL, and the point of the shell around `cargo
+      # test` is to make the DIFFERENCE between the accepted failure and a new one
+      # visible WITHOUT downloading the log. Workflow logs need an authenticated
+      # request; annotations and the job summary do not. Until this existed, the
+      # only way to learn whether a red was the documented red was to open the log
+      # by hand and read it to someone -- which is exactly how a stale log from an
+      # earlier run got diagnosed twice on 2026-07-30.
+      #
+      # IT STILL EXITS NON-ZERO EVEN WHEN THE FAILURE SET IS EXACTLY THE ACCEPTED
+      # ONE. Turning the job green on "the expected tests failed" would be the
+      # `--skip` decision by another route: the badge would claim a passing suite
+      # while five audits did not pass. The founder accepted a red; this makes the
+      # red self-describing, it does not launder it.
+      - name: test (counts and failure set surfaced as annotations)
+        run: |
+          set +e
+          cargo test 2>&1 | tee test.log
+          set -e
+
+          # The summary block's bare `    module::tests::name` lines. The FIRST
+          # `failures:` block is followed by `---- name stdout ----` headers, not
+          # bare names, so this pattern only matches the final list.
+          mapfile -t GOT < <(grep -E '^ {4}[A-Za-z_][A-Za-z0-9_]*::' test.log | sed 's/^ *//' | sort -u)
+          RESULT=$(grep -oE 'test result: [A-Za-z]+\. [0-9]+ passed; [0-9]+ failed; [0-9]+ ignored' test.log | tail -n 1)
+          PASSED=$(sed -nE 's/.* ([0-9]+) passed.*/\1/p' <<<"${RESULT}")
+          FAILED=$(sed -nE 's/.*; ([0-9]+) failed.*/\1/p' <<<"${RESULT}")
+
+          # A PARSER THAT SILENTLY MISSES ENTRIES WOULD MAKE EVERY COMPARISON
+          # BELOW MEANINGLESS, so it is cross-checked against the count cargo
+          # printed before any of it is trusted.
+          if [ -z "${RESULT}" ]; then
+            echo "::error::could not parse a 'test result:' line from cargo test -- the counts below would be invented, so this is a parser failure and not a test verdict"
+            exit 1
+          fi
+          if [ "${#GOT[@]}" -ne "${FAILED}" ]; then
+            echo "::error::parsed ${#GOT[@]} failing test name(s) but cargo reported ${FAILED} failed -- the name extractor is wrong, so the accepted-set comparison cannot be trusted"
+            exit 1
+          fi
+
+          # The five that CANNOT pass in a published checkout: four need
+          # tools/export-baseline.txt and one needs DOC_INDEX.md, both of which the
+          # export withholds by design, and all five PANIC rather than narrow their
+          # own scope silently. Documented in this job's header.
+          ACCEPTED=$(printf '%s\n' \
+            'citation_audit::tests::no_internal_doc_tree_path_citations' \
+            'citation_audit::tests::spec_citations_resolve_through_doc_index' \
+            'license_audit::tests::both_licence_files_are_published_and_agree_on_the_copyright_holder' \
+            'license_audit::tests::every_published_cargo_manifest_declares_the_dual_licence' \
+            'license_audit::tests::the_readme_points_a_reader_at_both_licence_files' | sort)
+          GOTLIST=$(printf '%s\n' "${GOT[@]}")
+          UNEXPECTED=$(comm -23 <(echo "${GOTLIST}") <(echo "${ACCEPTED}"))
+          MISSING=$(comm -13 <(echo "${GOTLIST}") <(echo "${ACCEPTED}"))
+
+          {
+            echo "### goat-attestor test result"
+            echo ""
+            echo "\`${RESULT}\`"
+            echo ""
+            echo "Failing tests:"
+            echo '```'
+            echo "${GOTLIST}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "::error::goat-attestor tests: ${PASSED} passed, ${FAILED} failed."
+          if [ -n "${UNEXPECTED}" ]; then
+            echo "::error::UNEXPECTED failure(s) -- NOT part of the accepted published-checkout set: $(echo ${UNEXPECTED} | tr '\n' ' ')"
+          fi
+          if [ -n "${MISSING}" ]; then
+            # Not a pass: a documented-red test that stopped failing means the
+            # premise behind accepting it changed, and that deserves a look.
+            echo "::error::accepted test(s) NO LONGER failing (investigate, do not celebrate): $(echo ${MISSING} | tr '\n' ' ')"
+          fi
+          if [ -z "${UNEXPECTED}" ] && [ -z "${MISSING}" ]; then
+            echo "::error::this is exactly the DOCUMENTED red: all ${FAILED} failures are the accepted published-checkout audit tests. No new defect."
+          fi
+          exit 1
 
   # ---------------------------------------------------------------------------
   # goat-attestor-anvil: the sixteen #[ignore]d live-Anvil hazard tests.
