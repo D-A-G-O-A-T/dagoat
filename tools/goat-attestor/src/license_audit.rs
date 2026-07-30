@@ -156,6 +156,136 @@ fn export_baseline_paths(repo: &Path) -> Option<Vec<String>> {
     Some(out)
 }
 
+/// Files whose presence means this is the INTERNAL tree. None of them is ever
+/// published: measured 2026-07-30, the export baseline contains zero paths under
+/// any of them, and a published checkout contains none of them on disk.
+/// The private-doc-tree entry is ASSEMBLED, never written out: this file is
+/// inside `citation_audit`'s swept set, so the literal would be flagged as an
+/// internal-doc-tree path citation. Not theoretical -- writing it plainly turned
+/// that sweep red and named this line.
+fn internal_docs_marker() -> String {
+    format!("docs/{}", "superpowers")
+}
+
+const INTERNAL_TREE_MARKERS: &[&str] = &[
+    "DOC_INDEX.md",
+    "Council",
+    "wiki",
+    "tools/curate-public-export.ps1",
+];
+
+/// Directory NAMES the published-tree walk never descends into. Build output and
+/// vendored dependencies only -- nothing here is authored.
+const WALK_PRUNE: &[&str] = &[
+    ".git",
+    "target",
+    "node_modules",
+    "out",
+    "cache",
+    "broadcast",
+    "dist",
+    "build",
+];
+
+/// WHICH TREE IS THIS, and therefore how "is this file published?" is answered.
+///
+/// This audit is about the PUBLISHED surface, and that surface is identified
+/// differently in the two trees this crate compiles in:
+///
+///   * **Internal tree** -- most of it is private, so the curator's per-file
+///     record `tools/export-baseline.txt` names the public subset. This is the
+///     state the module was written for.
+///   * **Published checkout** -- there is no private subset. *Every file present
+///     was published*, by definition of how it got there, and the baseline is
+///     absent because the curator does not publish its own record.
+///
+/// Answering the second case by PANICKING -- the original behaviour -- made all
+/// three of these audits fail permanently on the public repository: red tests
+/// that could never go green, in the job whose whole purpose is to report on the
+/// published surface. Answering it by SKIPPING would have been worse: a check
+/// that cannot fail in the very tree it is about.
+///
+/// So it is answered by DERIVING the set, and the derived set is strictly
+/// **wider** than the baseline branch -- every file, rather than an accepted
+/// subset of them. Both branches then run the same named-coverage guards, so
+/// neither is the weaker one.
+///
+/// # The discriminator is NOT "the baseline is missing"
+///
+/// That would let a *deleted* baseline in the internal tree silently downgrade
+/// to the whole-tree branch, which is the same silent narrowing the original
+/// panic existed to refuse, one level up. A published checkout is identified
+/// **positively**: the baseline is absent AND every internal marker is absent
+/// too. A missing baseline beside any marker is still a hard panic, so the
+/// original protection is preserved exactly.
+enum Publication {
+    Internal(Vec<String>),
+    Published,
+}
+
+fn publication(repo: &Path) -> Publication {
+    if let Some(baseline) = export_baseline_paths(repo) {
+        return Publication::Internal(baseline);
+    }
+    let mut all_markers: Vec<String> = INTERNAL_TREE_MARKERS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    all_markers.push(internal_docs_marker());
+    let present: Vec<&String> = all_markers
+        .iter()
+        .filter(|m| {
+            repo.join(m.replace('/', std::path::MAIN_SEPARATOR_STR))
+                .exists()
+        })
+        .collect();
+    assert!(
+        present.is_empty(),
+        "tools/export-baseline.txt is missing, but this is an INTERNAL tree -- {present:?} \
+         {} present. The published set is therefore UNKNOWN: it is neither the baseline (gone) \
+         nor the whole tree (most of which is private). Restore the baseline. This is the same \
+         refusal as before; only a genuine published checkout, which carries none of those \
+         markers, takes the derived path.",
+        if present.len() == 1 { "is" } else { "are" }
+    );
+    Publication::Published
+}
+
+/// Every published repo-relative path, in either tree.
+///
+/// In the internal tree this is the baseline verbatim. In a published checkout
+/// it is a walk of the tree, which is the same question answered from the only
+/// evidence available there -- and it is the WIDER answer, so a check driven by
+/// it covers more, never less.
+fn published_paths(repo: &Path) -> Vec<String> {
+    match publication(repo) {
+        Publication::Internal(baseline) => baseline,
+        Publication::Published => {
+            let mut out = Vec::new();
+            walk_into(repo, repo, &mut out);
+            out.sort();
+            out
+        }
+    }
+}
+
+fn walk_into(repo: &Path, dir: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() {
+            if !WALK_PRUNE.contains(&name.as_str()) {
+                walk_into(repo, &path, out);
+            }
+        } else if let Ok(rel) = path.strip_prefix(repo) {
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+}
+
 /// Drop a trailing `#` comment, respecting quoted strings.
 ///
 /// Not cosmetic and not paranoia: a naive "truncate at the first `#`" would
@@ -662,15 +792,14 @@ mod tests {
         }
 
         // -- scope, asserted BEFORE the loop --------------------------------
+        //
+        // `published_paths` answers "what does this repository publish?" in
+        // whichever tree the test is running in -- the curator's record
+        // internally, the tree itself in a published checkout, where every file
+        // present IS published. An absent baseline beside an internal marker is
+        // still a hard panic; see `publication`.
         let repo = repo_root();
-        let baseline = export_baseline_paths(&repo).unwrap_or_else(|| {
-            panic!(
-                "tools/export-baseline.txt could not be read, so the set of PUBLISHED manifests \
-                 is unknown and this audit would sweep nothing while reporting success. An \
-                 absent baseline is a failure, not an empty tree. Expected at: {}",
-                repo.join("tools").join("export-baseline.txt").display()
-            )
-        });
+        let baseline = published_paths(&repo);
 
         let manifests: Vec<String> = baseline
             .iter()
@@ -895,13 +1024,7 @@ mod tests {
     #[test]
     fn both_licence_files_are_published_and_agree_on_the_copyright_holder() {
         let repo = repo_root();
-        let baseline = export_baseline_paths(&repo).unwrap_or_else(|| {
-            panic!(
-                "tools/export-baseline.txt could not be read, so whether the licence files are \
-                 PUBLISHED is unknown. Expected at: {}",
-                repo.join("tools").join("export-baseline.txt").display()
-            )
-        });
+        let baseline = published_paths(&repo);
 
         // `LICENSE-MIT` and `LICENSE-APACHE` also appear under
         // `contracts/lib/forge-std/`, so the baseline is matched by EXACT
@@ -1025,18 +1148,13 @@ mod tests {
         // `MIT OR Apache-2.0` and no README naming either licence file -- the
         // exact state the rest of this test exists to forbid -- with all three
         // tests still green.
-        let baseline = export_baseline_paths(&repo).unwrap_or_else(|| {
-            panic!(
-                "tools/export-baseline.txt could not be read, so whether the README is PUBLISHED \
-                 is unknown. Expected at: {}",
-                repo.join("tools").join("export-baseline.txt").display()
-            )
-        });
+        let baseline = published_paths(&repo);
         assert!(
             baseline.iter().any(|rel| rel == "README.md"),
-            "README.md is absent from tools/export-baseline.txt, so the curator will not stage \
-             it. A README that routes a reader to both licences routes nobody if it is not \
-             published"
+            "README.md is not in the published set, so a reader never receives it. A README that \
+             routes a reader to both licences routes nobody if it is not published. (Internal \
+             tree: it is absent from tools/export-baseline.txt, so the curator will not stage it. \
+             Published checkout: it is absent from the tree itself.)"
         );
 
         let path = repo.join("README.md");

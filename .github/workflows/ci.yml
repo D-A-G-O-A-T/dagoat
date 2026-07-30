@@ -191,43 +191,44 @@ jobs:
   # rustfmt-clean today (74 diff hunks across 12 files verified 2026-07-20). Wiring it would
   # fail on the first push. Re-check with `cargo fmt --all -- --check` before gating it.
   #
-  # !! THIS JOB IS EXPECTED TO GO RED ON THE FIRST PUBLISH, and the reason is a
-  # publication-surface decision rather than a code defect.
+  # THIS JOB WAS PERMANENTLY RED UNTIL 2026-07-30, and the fix is worth knowing
+  # about because the obvious ones were all wrong.
   #
-  # MEASURED, not argued. A tree holding exactly the 1,349 paths the export
-  # accepts was assembled and `cargo test` run inside it, 2026-07-29. Result:
-  # the crate COMPILES CLEANLY -- which retires the "the sources are untracked"
-  # blocker this file used to carry -- and reports
-  # `781 passed; 5 failed; 19 ignored`.
+  # Five audits -- three in `license_audit`, two in `citation_audit` -- answered
+  # "what does this repository publish?" from `tools/export-baseline.txt` (the
+  # curator's per-file record) and `DOC_INDEX.md` (the title-to-path resolver).
+  # The export publishes NEITHER, deliberately: the resolver maps titles to
+  # private-tree paths, so publishing it would violate the very rule one of those
+  # tests enforces. Absent them the audits PANICKED rather than sweep a narrowed
+  # set in silence -- correct behaviour that nonetheless made them unable to pass
+  # in the only tree CI ever sees.
   #
-  # THE FIVE HAVE TWO DIFFERENT CAUSES, and that matters because it means one fix
-  # does not clear them. An earlier revision of this comment said all five read the
-  # baseline. That was reasoned from moving one file aside, and it was wrong about
-  # the fifth. Corrected here from the full-checkout run:
+  # THE THREE OBVIOUS FIXES WERE ALL WRONG. `--skip` hides the audits that exist
+  # to prevent hiding. Publishing the baseline clears four of five and leaves the
+  # resolver one. Accepting a permanent red puts a red badge on a public
+  # repository and trains everyone to ignore it.
   #
-  #   FOUR need `tools/export-baseline.txt`, the curator's per-file publication
-  #   record. They PANIC when it is absent, on purpose: "the baseline vanished" and
-  #   "every published manifest is correctly licensed" must not produce the same
-  #   green run. The curator excludes that file by an explicit tree rule.
-  #     license_audit::every_published_cargo_manifest_declares_the_dual_licence
-  #     license_audit::both_licence_files_are_published_and_agree_on_the_copyright_holder
-  #     license_audit::the_readme_points_a_reader_at_both_licence_files
-  #     citation_audit::no_internal_doc_tree_path_citations
+  # WHAT WAS DONE INSTEAD: the audits now answer the same question from the tree
+  # itself when no baseline is present, because in a published checkout EVERY FILE
+  # PRESENT IS PUBLISHED -- that is what publishing means. The derived set is
+  # strictly WIDER than the baseline subset, so the published branch sweeps more,
+  # never less, and both branches run the same named-coverage guards.
   #
-  #   ONE needs `DOC_INDEX.md`, the title-to-path resolver, and fails with "the
-  #   table is the only resolver; it is not optional":
-  #     citation_audit::spec_citations_resolve_through_doc_index
-  #   That file is withheld DELIBERATELY and the curator asserts its absence as a
-  #   named PASS check. It is also the one file that could not be published without
-  #   violating the rule the sibling test enforces, since resolving a title is
-  #   precisely mapping it to an internal-tree path. So publishing the baseline
-  #   clears four of five, and the fifth has no fix on the publication side.
+  # The discriminator is NOT "the baseline is missing" -- that would let a deleted
+  # baseline in the internal tree silently downgrade. A published checkout is
+  # identified positively: baseline absent AND every internal marker absent. A
+  # missing baseline beside any marker is still a hard panic, verified by
+  # mutation.
   #
-  # NOT SILENCED. Adding `--skip license_audit --skip citation_audit` here would
-  # turn a loud red into a quiet narrowing of exactly the audits that exist to
-  # prevent one, and this repository has recorded that failure shape nine times.
-  # The decision -- publish the baseline, accept the red, or something else -- is
-  # a founder call. It is recorded here, not taken.
+  # The resolver test keeps its full shape where a resolver exists and, where none
+  # can exist, still runs the half that needs none (the dated-reference sweep)
+  # plus a guard that the extractor found citations at all. Its residual is
+  # recorded in that test rather than implied by silence: 56 quoted title
+  # citations ship in published files and a public reader can resolve none of
+  # them, which is a content decision about what the public repo should carry.
+  #
+  # Measured in a 1,351-path simulated published checkout, 2026-07-30:
+  # `786 passed; 0 failed; 19 ignored`, exit 0.
   goat-attestor:
     runs-on: ubuntu-latest
     defaults:
@@ -244,23 +245,27 @@ jobs:
           workspaces: tools/goat-attestor
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
-      # THIS STEP IS EXPECTED TO FAIL, and the point of the shell around `cargo
-      # test` is to make the DIFFERENCE between the accepted failure and a new one
-      # visible WITHOUT downloading the log. Workflow logs need an authenticated
-      # request; annotations and the job summary do not. Until this existed, the
-      # only way to learn whether a red was the documented red was to open the log
-      # by hand and read it to someone -- which is exactly how a stale log from an
-      # earlier run got diagnosed twice on 2026-07-30.
+      # THIS STEP USED TO BE EXPECTED TO FAIL. It no longer is, and the history
+      # matters because the comment that said so was load-bearing for months.
       #
-      # IT STILL EXITS NON-ZERO EVEN WHEN THE FAILURE SET IS EXACTLY THE ACCEPTED
-      # ONE. Turning the job green on "the expected tests failed" would be the
-      # `--skip` decision by another route: the badge would claim a passing suite
-      # while five audits did not pass. The founder accepted a red; this makes the
-      # red self-describing, it does not launder it.
-      - name: test (counts and failure set surfaced as annotations)
+      # Five audits (three licence, two citation) derived "what does this
+      # repository publish?" from `tools/export-baseline.txt` and `DOC_INDEX.md`,
+      # neither of which the export publishes -- so in a published checkout they
+      # PANICKED, by design, rather than narrow their own scope in silence. That
+      # made them permanently red here. As of 2026-07-30 they answer the same
+      # question from the tree itself when there is no baseline, which in a
+      # published checkout is the WIDER answer: every file present IS published.
+      # Measured in a 1,351-path simulated checkout: 786 passed, 0 failed.
+      #
+      # So a failure here is now a real failure. The shell below exists to make
+      # the counts readable WITHOUT an authenticated log download -- annotations
+      # and the job summary are public, workflow logs are not, and that gap cost
+      # real time when a stale log from an earlier run was diagnosed twice.
+      - name: test (counts surfaced as annotations)
         run: |
           set +e
           cargo test 2>&1 | tee test.log
+          CARGO_STATUS=$?
           set -e
 
           # The summary block's bare `    module::tests::name` lines. The FIRST
@@ -271,55 +276,39 @@ jobs:
           PASSED=$(sed -nE 's/.* ([0-9]+) passed.*/\1/p' <<<"${RESULT}")
           FAILED=$(sed -nE 's/.*; ([0-9]+) failed.*/\1/p' <<<"${RESULT}")
 
-          # A PARSER THAT SILENTLY MISSES ENTRIES WOULD MAKE EVERY COMPARISON
-          # BELOW MEANINGLESS, so it is cross-checked against the count cargo
-          # printed before any of it is trusted.
+          # A PARSER THAT SILENTLY MISSES ENTRIES WOULD MAKE THE REPORT BELOW
+          # MEANINGLESS, so it is cross-checked before any of it is trusted. Note
+          # this also refuses a cargo run that died before printing a result --
+          # "could not parse" must never render as "nothing failed".
           if [ -z "${RESULT}" ]; then
-            echo "::error::could not parse a 'test result:' line from cargo test -- the counts below would be invented, so this is a parser failure and not a test verdict"
+            echo "::error::could not parse a 'test result:' line from cargo test (cargo exited ${CARGO_STATUS}) -- any count reported here would be invented, so this is a parser/build failure and not a test verdict"
             exit 1
           fi
           if [ "${#GOT[@]}" -ne "${FAILED}" ]; then
-            echo "::error::parsed ${#GOT[@]} failing test name(s) but cargo reported ${FAILED} failed -- the name extractor is wrong, so the accepted-set comparison cannot be trusted"
+            echo "::error::parsed ${#GOT[@]} failing test name(s) but cargo reported ${FAILED} failed -- the name extractor is wrong, so the list below cannot be trusted"
             exit 1
           fi
-
-          # The five that CANNOT pass in a published checkout: four need
-          # tools/export-baseline.txt and one needs DOC_INDEX.md, both of which the
-          # export withholds by design, and all five PANIC rather than narrow their
-          # own scope silently. Documented in this job's header.
-          ACCEPTED=$(printf '%s\n' \
-            'citation_audit::tests::no_internal_doc_tree_path_citations' \
-            'citation_audit::tests::spec_citations_resolve_through_doc_index' \
-            'license_audit::tests::both_licence_files_are_published_and_agree_on_the_copyright_holder' \
-            'license_audit::tests::every_published_cargo_manifest_declares_the_dual_licence' \
-            'license_audit::tests::the_readme_points_a_reader_at_both_licence_files' | sort)
-          GOTLIST=$(printf '%s\n' "${GOT[@]}")
-          UNEXPECTED=$(comm -23 <(echo "${GOTLIST}") <(echo "${ACCEPTED}"))
-          MISSING=$(comm -13 <(echo "${GOTLIST}") <(echo "${ACCEPTED}"))
 
           {
             echo "### goat-attestor test result"
             echo ""
             echo "\`${RESULT}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${FAILED}" -eq 0 ] && [ "${CARGO_STATUS}" -eq 0 ]; then
+            echo "goat-attestor tests: ${PASSED} passed, 0 failed."
+            exit 0
+          fi
+
+          GOTLIST=$(printf '%s\n' "${GOT[@]}")
+          {
             echo ""
             echo "Failing tests:"
             echo '```'
             echo "${GOTLIST}"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
-
-          echo "::error::goat-attestor tests: ${PASSED} passed, ${FAILED} failed."
-          if [ -n "${UNEXPECTED}" ]; then
-            echo "::error::UNEXPECTED failure(s) -- NOT part of the accepted published-checkout set: $(echo ${UNEXPECTED} | tr '\n' ' ')"
-          fi
-          if [ -n "${MISSING}" ]; then
-            # Not a pass: a documented-red test that stopped failing means the
-            # premise behind accepting it changed, and that deserves a look.
-            echo "::error::accepted test(s) NO LONGER failing (investigate, do not celebrate): $(echo ${MISSING} | tr '\n' ' ')"
-          fi
-          if [ -z "${UNEXPECTED}" ] && [ -z "${MISSING}" ]; then
-            echo "::error::this is exactly the DOCUMENTED red: all ${FAILED} failures are the accepted published-checkout audit tests. No new defect."
-          fi
+          echo "::error::goat-attestor tests: ${PASSED} passed, ${FAILED} failed -- $(echo ${GOTLIST} | tr '\n' ' ')"
           exit 1
 
   # ---------------------------------------------------------------------------
