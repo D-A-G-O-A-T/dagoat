@@ -283,6 +283,10 @@ if ($missing.Count -gt 0) {
 $ExpectedLibTestsMin     = 601      # floor: `cargo test --lib` passed count
 $ExpectedLibIgnored      = 19       # exact: #[ignore]d tests skipped by --lib
 $ExpectedIgnoredPassed   = 19       # exact: the live-Anvil hazard suite
+# Exact, and ZERO is the assertion. This crate has no intentional doctests; the
+# only one it ever had was an accident (see STEP 1). A broken doctest reds the
+# step by failing to compile, and a new working one reds it by moving this count.
+$ExpectedDoctests        = 0
 $ExpectedForgeTests      = 248      # exact: `forge test` passed count
 $ExpectedNodeParityTests = 10       # exact: node --test passed count (step 5)
 $Eip170Limit             = 24576    # bytes; EIP-170 deployed-code cap
@@ -979,8 +983,41 @@ try {
     if ($c.Ignored -ne $ExpectedLibIgnored) {
         Fail-Step -Name 'cargo test --lib' -Reason "$($c.Ignored) ignored, expected exactly $ExpectedLibIgnored -- an #[ignore] was added or removed; bump `$ExpectedLibIgnored/`$ExpectedIgnoredPassed deliberately"
     }
+    # DOCTESTS, because `cargo test --lib` DOES NOT RUN THEM and CI's `cargo test`
+    # does. That gap shipped a defect: a spec formula quoted in a `//!` block was
+    # indented five spaces inside a blockquote, which Markdown makes a code block
+    # and rustdoc compiles as Rust, so it became the crate's only doctest and
+    # failed with five `cannot find value` errors. This gate was green on the same
+    # commit, because --lib never compiled it. Found only on the first CI run to
+    # reach `cargo test`.
+    #
+    # THE COUNT IS PINNED AT ZERO AND THAT IS AN ASSERTION, NOT AN ABSENCE. A
+    # broken doctest fails to compile and reds this outright; a NEW, working
+    # doctest moves the count off zero and also reds it, so adding one is a
+    # deliberate act with a pin to bump rather than something that appears
+    # silently. `--doc` builds the lib only, so it does not contend with a
+    # running relayer's hold on target\debug the way a full `cargo test` does.
+    $rDoc = Invoke-Tool -Exe 'cargo' -ToolArgs @('test', '--doc') -WorkDir $AttestorDir `
+        -LogName 'cargo-test-doc' -StepName 'cargo test --lib'
+    if ($rDoc.ExitCode -ne 0) {
+        Fail-Step -Name 'cargo test --lib' -Reason (
+            "cargo test --doc exited $($rDoc.ExitCode). A doctest failed to compile or run. " +
+            "This gate's --lib step CANNOT see doctests, which is why this runs separately. " +
+            "Full output: $($rDoc.LogPath)")
+    }
+    $docCount = 0
+    $mDoc = [regex]::Match($rDoc.All, '(?m)^test result: \w+\. (?<p>\d+) passed')
+    if ($mDoc.Success) { $docCount = [int]$mDoc.Groups['p'].Value }
+    if ($docCount -ne $ExpectedDoctests) {
+        Fail-Step -Name 'cargo test --lib' -Reason (
+            "cargo test --doc ran ${docCount} doctest(s), expected exactly ${ExpectedDoctests}. " +
+            "A doctest appearing is usually an INDENTED CODE BLOCK in a doc comment that rustdoc " +
+            "decided to compile -- check for a quoted formula or example indented four or more " +
+            "spaces. If the doctest is intended, bump `$ExpectedDoctests deliberately.")
+    }
+
     Add-StepResult -Name 'cargo test --lib' -Status 'PASS' `
-        -Detail "$($c.Passed) passed / $($c.Failed) failed / $($c.Ignored) ignored"
+        -Detail "$($c.Passed) passed / $($c.Failed) failed / $($c.Ignored) ignored / $docCount doctest(s)"
 
     # -----------------------------------------------------------------------
     # STEP 2 -- clippy

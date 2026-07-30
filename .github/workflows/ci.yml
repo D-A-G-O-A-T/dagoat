@@ -268,36 +268,62 @@ jobs:
           CARGO_STATUS=$?
           set -e
 
-          # The summary block's bare `    module::tests::name` lines. The FIRST
-          # `failures:` block is followed by `---- name stdout ----` headers, not
-          # bare names, so this pattern only matches the final list.
-          mapfile -t GOT < <(grep -E '^ {4}[A-Za-z_][A-Za-z0-9_]*::' test.log | sed 's/^ *//' | sort -u)
-          RESULT=$(grep -oE 'test result: [A-Za-z]+\. [0-9]+ passed; [0-9]+ failed; [0-9]+ ignored' test.log | tail -n 1)
-          PASSED=$(sed -nE 's/.* ([0-9]+) passed.*/\1/p' <<<"${RESULT}")
-          FAILED=$(sed -nE 's/.*; ([0-9]+) failed.*/\1/p' <<<"${RESULT}")
+          # `cargo test` runs SEVERAL TARGETS -- lib, each integration test, and
+          # the doctests -- and each prints its own `test result:` line. An
+          # earlier revision took `tail -n 1`, which is the LAST target's line,
+          # not the run's total: a failing lib followed by a passing doctest
+          # would have reported "0 failed". They are summed instead.
+          mapfile -t RESULTS < <(grep -oE 'test result: [A-Za-z]+\. [0-9]+ passed; [0-9]+ failed; [0-9]+ ignored' test.log)
+          PASSED=0
+          FAILED=0
+          for r in "${RESULTS[@]}"; do
+            p=$(sed -nE 's/.* ([0-9]+) passed.*/\1/p' <<<"${r}")
+            f=$(sed -nE 's/.*; ([0-9]+) failed.*/\1/p' <<<"${r}")
+            PASSED=$((PASSED + p))
+            FAILED=$((FAILED + f))
+          done
+
+          # The summary block's failing-test names. TWO shapes, because cargo
+          # prints doctest failures differently from unit-test failures:
+          #     module::tests::name
+          #     src/stream_g/mod.rs - stream_g::deployment_payload (line 198)
+          # Missing the second shape is not hypothetical -- it happened on the
+          # first CI run to reach `cargo test`, and the cross-check below caught
+          # it and refused to report a verdict rather than list nothing.
+          # The FIRST `failures:` block is followed by `---- name stdout ----`
+          # headers, not bare names, so these patterns only match the final list.
+          mapfile -t GOT < <(grep -E '^ {4}([A-Za-z_][A-Za-z0-9_]*::|[^ ].* - .* \(line [0-9]+\)$)' test.log | sed 's/^ *//' | sort -u)
 
           # A PARSER THAT SILENTLY MISSES ENTRIES WOULD MAKE THE REPORT BELOW
           # MEANINGLESS, so it is cross-checked before any of it is trusted. Note
           # this also refuses a cargo run that died before printing a result --
           # "could not parse" must never render as "nothing failed".
-          if [ -z "${RESULT}" ]; then
-            echo "::error::could not parse a 'test result:' line from cargo test (cargo exited ${CARGO_STATUS}) -- any count reported here would be invented, so this is a parser/build failure and not a test verdict"
+          if [ "${#RESULTS[@]}" -eq 0 ]; then
+            echo "::error::could not parse any 'test result:' line from cargo test (cargo exited ${CARGO_STATUS}) -- any count reported here would be invented, so this is a parser/build failure and not a test verdict"
             exit 1
           fi
           if [ "${#GOT[@]}" -ne "${FAILED}" ]; then
-            echo "::error::parsed ${#GOT[@]} failing test name(s) but cargo reported ${FAILED} failed -- the name extractor is wrong, so the list below cannot be trusted"
+            echo "::error::parsed ${#GOT[@]} failing test name(s) but cargo reported ${FAILED} failed across ${#RESULTS[@]} target(s) -- the name extractor is wrong, so the list below cannot be trusted"
             exit 1
           fi
 
           {
             echo "### goat-attestor test result"
             echo ""
-            echo "\`${RESULT}\`"
+            echo "${PASSED} passed, ${FAILED} failed across ${#RESULTS[@]} target(s)"
           } >> "${GITHUB_STEP_SUMMARY}"
 
+          # BOTH conditions, deliberately. A zero failure count with a non-zero
+          # cargo exit means something failed that never reached a `test result:`
+          # line -- a target that would not compile, most often -- and that must
+          # not read as a pass.
           if [ "${FAILED}" -eq 0 ] && [ "${CARGO_STATUS}" -eq 0 ]; then
-            echo "goat-attestor tests: ${PASSED} passed, 0 failed."
+            echo "goat-attestor tests: ${PASSED} passed, 0 failed across ${#RESULTS[@]} target(s)."
             exit 0
+          fi
+          if [ "${FAILED}" -eq 0 ]; then
+            echo "::error::cargo test exited ${CARGO_STATUS} but every parsed target reported 0 failures -- something failed before printing a result (a target that did not compile). Read the log; do not treat this as a pass."
+            exit 1
           fi
 
           GOTLIST=$(printf '%s\n' "${GOT[@]}")

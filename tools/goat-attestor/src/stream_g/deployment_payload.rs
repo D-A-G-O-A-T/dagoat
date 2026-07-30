@@ -12,7 +12,15 @@
 //! > role-keyed contracts object whose entries contain address and
 //! > runtimeCodeHash […] Approval metadata is outside the payload."
 //! >
-//! >     manifestHash = keccak256(UTF8(RFC8785(payload)))
+//! > `manifestHash = keccak256(UTF8(RFC8785(payload)))`
+//!
+//! (That formula is INLINE CODE, not an indented block, and the difference is
+//! not cosmetic. Five spaces after the `>` made it a Markdown indented code
+//! block, which rustdoc compiles as a Rust doctest -- so a quoted spec formula
+//! became the crate's only doctest and failed to compile with five `cannot find
+//! value` errors. It was invisible to the local gate, which runs
+//! `cargo test --lib`, and surfaced on the first CI run to reach `cargo test`.
+//! Keep quoted formulae inline.)
 //!
 //! This is the ORIGINAL of the rule `feeScheduleHash` inherits: `:808` says the
 //! schedule payload "uses the same RFC 8785/UTF-8 rules as the deployment
