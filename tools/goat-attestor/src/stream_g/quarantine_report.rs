@@ -2322,13 +2322,35 @@ mod tests {
     /// in the directory beside it.
     ///
     /// Modelled here without ACLs by putting a **directory** where the `-shm`
-    /// file has to go, which is the same refusal from SQLite's point of view
-    /// and is deterministic on every platform.
+    /// file has to go.
     ///
-    /// Mutation proof: delete the `SQLITE_CANTOPEN` branch from
+    /// **Corrected 2026-07-30 — this doc used to end "which is the same refusal
+    /// from SQLite's point of view and is deterministic on every platform", and
+    /// the first CI run on ubuntu-latest refuted it.** The behaviour is
+    /// deterministic *per platform* and the platforms disagree:
+    ///
+    /// * **Windows VFS**: the open touches the `-shm` eagerly and fails
+    ///   `SQLITE_CANTOPEN` — the behaviour this test was written against, on the
+    ///   machine it was written on.
+    /// * **unix VFS**: a read-only open of a WAL database whose `-wal` is
+    ///   absent (checkpointed away when the store shut down) never needs the
+    ///   WAL-index, so the blocked `-shm` name is simply never opened and the
+    ///   report **succeeds** — run 30512647063 reported `status: Complete,
+    ///   total: 1`, the row decrypted, and `db_shm_bytes: Some(4096)`, the
+    ///   sidecar probe measuring the planted *directory's* metadata length.
+    ///
+    /// Both branches below pin their platform's measured behaviour, so the test
+    /// is vacuous on neither and a bundled-SQLite version bump that changes
+    /// either VFS's behaviour turns it red instead of passing silently
+    /// (`libsqlite3-sys` is bundled, so both platforms compile the same SQLite).
+    /// The unix branch is written from the CI dump above and is first verified
+    /// by the next CI run — there is no Linux on the dev machine to run it.
+    ///
+    /// Mutation proof (Windows): delete the `SQLITE_CANTOPEN` branch from
     /// [`map_sqlx_error`] and this test goes red — the error becomes
     /// `Query`/`Open` again and carries none of the four explanatory strings
-    /// asserted below.
+    /// asserted below. On unix that mapping is unreachable from this scenario,
+    /// so the mutation coverage is Windows-only; the gate runs on Windows.
     #[tokio::test]
     async fn cantopen_on_a_readable_file_blames_the_directory_not_the_file() {
         let (dir, store, db, _lock) = live_store().await;
@@ -2367,31 +2389,52 @@ mod tests {
              legitimately be about the file"
         );
 
-        let err = load_report(&blocked, Some(&key_a()), &QuarantineQuery::default())
-            .await
-            .expect_err("SQLite cannot open the -shm, so this must fail");
+        let outcome = load_report(&blocked, Some(&key_a()), &QuarantineQuery::default()).await;
 
-        assert!(
-            matches!(err, QuarantineReportError::CannotOpenSidecars { .. }),
-            "a CANTOPEN about a readable file must not surface as a bare Open/Query: {err:?}"
-        );
-        let msg = err.to_string();
-        for needle in [
-            "exists and is readable",
-            "DIRECTORY",
-            "-shm",
-            "Remedy:",
-            "immutable=1",
-        ] {
+        // Windows VFS: the -shm is touched eagerly, so this MUST fail, and the
+        // failure must blame the directory rather than the file. Measured here.
+        #[cfg(windows)]
+        {
+            let err = outcome.expect_err("SQLite cannot open the -shm, so this must fail");
             assert!(
-                msg.contains(needle),
-                "the error must explain the real cause and the remedy; missing {needle:?} in:\n\
-                 {msg}"
+                matches!(err, QuarantineReportError::CannotOpenSidecars { .. }),
+                "a CANTOPEN about a readable file must not surface as a bare Open/Query: {err:?}"
+            );
+            let msg = err.to_string();
+            for needle in [
+                "exists and is readable",
+                "DIRECTORY",
+                "-shm",
+                "Remedy:",
+                "immutable=1",
+            ] {
+                assert!(
+                    msg.contains(needle),
+                    "the error must explain the real cause and the remedy; missing {needle:?} in:\n\
+                     {msg}"
+                );
+            }
+            assert!(
+                msg.contains(&blocked.display().to_string()),
+                "and it must still name the path: {msg}"
             );
         }
-        assert!(
-            msg.contains(&blocked.display().to_string()),
-            "and it must still name the path: {msg}"
-        );
+
+        // unix VFS: a read-only open with no -wal present never opens the
+        // WAL-index, so the blocked -shm name is never even touched and the
+        // report MUST succeed — pinned from CI run 30512647063 (2026-07-30),
+        // whose dump showed `status: Complete, total: 1` with the row
+        // decrypted. If a bundled-SQLite bump makes unix touch the -shm here,
+        // this branch goes red and the change is reviewed instead of slipping
+        // through as a silently-different error surface.
+        #[cfg(unix)]
+        {
+            let ok = outcome.expect(
+                "unix reads a checkpointed WAL database read-only without its -shm; a failure \
+                 here means the bundled SQLite's unix VFS changed behaviour",
+            );
+            assert_eq!(ok.total, 1, "the same single planted row must be visible");
+            assert_eq!(ok.decrypt_failures, 0, "and it must decrypt");
+        }
     }
 }

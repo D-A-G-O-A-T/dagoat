@@ -84,6 +84,42 @@ if (-not $viteListen) {
     Write-Status 'Vite already on :5173 (will not stop it on app close)'
 }
 
+# RC.EXE, before cargo runs, because tauri-winres needs the Windows Resource
+# Compiler and CANNOT FIND IT ON THIS MACHINE without help. Its lookup order is
+# the $RC / $RC_<target> env vars, then PATH, then the Windows SDK registry key
+# (HKLM ...\Windows Kits\Installed Roots). Measured 2026-07-30: that registry key
+# is ABSENT here (the SDK lives under a non-standard root on D:), rc.exe is not
+# on PATH, and the build dies with "Are you sure you have RC.EXE in your $PATH".
+# It is a BUILD-SCRIPT dependency, so a cached build can hide it for weeks --
+# dagoat.exe built fine on 7/21 and failed on 7/29 after a dependency bump forced
+# the build script to re-run. Locate rc.exe and prepend it for THIS process only;
+# nothing global is touched.
+if (-not (Get-Command rc.exe -ErrorAction SilentlyContinue)) {
+    $rcDirs = @()
+    foreach ($kitRoot in @("D:\Program Files (x86)\Windows Kits\10\bin",
+                           "${env:ProgramFiles(x86)}\Windows Kits\10\bin",
+                           "${env:ProgramFiles}\Windows Kits\10\bin")) {
+        if (Test-Path $kitRoot) {
+            # Highest SDK version first, x64 only (the build host is x64).
+            Get-ChildItem $kitRoot -Directory -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending | ForEach-Object {
+                    $cand = Join-Path $_.FullName 'x64'
+                    if (Test-Path (Join-Path $cand 'rc.exe')) { $rcDirs += $cand }
+                }
+        }
+    }
+    if ($rcDirs.Count -gt 0) {
+        $env:PATH = "$($rcDirs[0]);$env:PATH"
+        Write-Status ("rc.exe not on PATH; using {0}" -f (Join-Path $rcDirs[0] 'rc.exe'))
+    } else {
+        Write-Status 'FATAL: rc.exe not found on PATH or under any Windows Kits root.'
+        Write-Status 'Install the Windows 10/11 SDK (any recent version), or set $env:RC to the full path of rc.exe.'
+        if ($viteStartedByUs -and $viteProc) { Stop-ProcessTree $viteProc.Id }
+        pause
+        exit 1
+    }
+}
+
 # ALWAYS rebuild (incremental - fast when nothing changed). Running a stale exe is
 # worse than a short wait: the JS frontend calls Tauri commands that only exist in
 # the current Rust (e.g. backend_finish, wallet_reveal_key) and breaks against old builds.
