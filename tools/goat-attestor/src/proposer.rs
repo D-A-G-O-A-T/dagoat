@@ -279,15 +279,40 @@ impl<'a, C: ChainClient + ?Sized, H: HttpGet> Proposer<'a, C, H> {
         Ok(vec![batch])
     }
 
-    /// Watcher heartbeat: confirm epoch if batch is in Proposed status.
+    /// Watcher heartbeat: confirm the epoch **only** once the batch is Proposed
+    /// *and* its challenge window has closed.
+    ///
+    /// # Why the deadline check is load-bearing
+    ///
+    /// `EpochSettlement`'s confirm reverts `WindowOpen()` while
+    /// `block.timestamp <= challengeDeadline`. This function used to test the
+    /// **status alone** and fire, and its two call sites run in the same cycle as
+    /// the propose that just set `challengeDeadline = now + challengeWindow` —
+    /// so the send was a *guaranteed* revert, every time, on every chain.
+    ///
+    /// It was invisible for two compounding reasons: both call sites discard the
+    /// result (`let _ =`), and on Base Sepolia the call reverted one line
+    /// *earlier* on `NotWatcher()`, because the daemon's watcher key did not
+    /// match the on-chain watcher. Fixing the key alone would have moved the
+    /// revert down one line and changed nothing observable — which is why this
+    /// lands before any key rotation, not after.
+    ///
+    /// Returning `Ok(false)` while the window is open is the same shape
+    /// `settlement.rs` already uses on its own path; this makes the two agree.
+    ///
+    /// A failure to read the clock propagates rather than being coerced to
+    /// "ready": a heartbeat that cannot tell the time must not act.
     pub fn confirm_if_ready(&self, epoch_id: u64) -> Result<bool, ProposerError> {
         let view = self.chain.get_batch(epoch_id)?;
-        if view.status == crate::chain::BatchStatus::Proposed {
-            self.chain.confirm_epoch(epoch_id)?;
-            Ok(true)
-        } else {
-            Ok(false)
+        if view.status != crate::chain::BatchStatus::Proposed {
+            return Ok(false);
         }
+        let now = self.chain.block_timestamp()?;
+        if now <= view.challenge_deadline {
+            return Ok(false);
+        }
+        self.chain.confirm_epoch(epoch_id)?;
+        Ok(true)
     }
 }
 
@@ -390,8 +415,91 @@ mod tests {
         };
         let batch = p.propose_full(&reg, Some(20260714)).unwrap();
         assert_eq!(batch.epoch_id, 20260714);
+
+        // 🔴 THIS WARP IS THE FIX, NOT TEST SCAFFOLDING. Until 2026-07-30 this
+        // line did not exist and the assertion below passed, because
+        // `confirm_if_ready` tested the batch STATUS alone and fired into a
+        // window the contract refuses (`WindowOpen()`). MockChain does not model
+        // that revert, so the mock happily recorded an op that a real node would
+        // have rejected — a green test about a call that could never succeed.
+        let view = chain.get_batch(20260714).unwrap();
+        let now = chain.block_timestamp().unwrap();
+        chain
+            .increase_time(view.challenge_deadline.saturating_sub(now) + 1)
+            .unwrap();
+
         assert!(p.confirm_if_ready(20260714).unwrap());
         assert_eq!(chain.ops().len(), 2);
+    }
+
+    /// The guard that keeps the daemon from firing a guaranteed revert.
+    ///
+    /// `EpochSettlement` refuses a confirm while
+    /// `block.timestamp <= challengeDeadline`, and both production call sites
+    /// run in the same cycle as the propose that just set that deadline — so
+    /// before this guard every heartbeat confirm was a revert, on every chain,
+    /// silently (both sites discard the result).
+    ///
+    /// Mutation proof: delete the `now <= view.challenge_deadline` early return
+    /// in [`Proposer::confirm_if_ready`] and this goes red on BOTH assertions —
+    /// the return flips to `true` and the op count moves 1 -> 2.
+    #[test]
+    fn confirm_if_ready_refuses_while_the_challenge_window_is_open() {
+        let dir = tempdir().unwrap();
+        let chain = MockChain::new();
+        let http = FixtureHttp::new(default_fixtures_dir());
+        let fah = FahClient::new(
+            http,
+            "https://api.foldingathome.org",
+            Duration::from_millis(0),
+        );
+        let mut reg = WorkerRegistry::new();
+        reg.upsert(WorkerEntry {
+            wallet: "0x00000000000000000000000000000000000000A1".into(),
+            username: "GOAT-alice".into(),
+            baseline_batched: true,
+            fah_id: None,
+            enrollment_epoch: None,
+        });
+        let p = Proposer {
+            chain: &chain,
+            fah: &fah,
+            bond_wei: 1_000_000_000_000_000_000,
+            evidence_dir: dir.path().to_path_buf(),
+            state_dir: dir.path().join("state"),
+        };
+        p.propose_full(&reg, Some(20260715)).unwrap();
+        let ops_after_propose = chain.ops().len();
+
+        // Precondition: the window really is open, else this proves nothing.
+        let view = chain.get_batch(20260715).unwrap();
+        let now = chain.block_timestamp().unwrap();
+        assert!(
+            now <= view.challenge_deadline,
+            "precondition: the challenge window must still be open (now={now}, deadline={})",
+            view.challenge_deadline
+        );
+
+        assert!(
+            !p.confirm_if_ready(20260715).unwrap(),
+            "a confirm inside the challenge window is a guaranteed WindowOpen() revert on chain; \
+             the heartbeat must not send it"
+        );
+        assert_eq!(
+            chain.ops().len(),
+            ops_after_propose,
+            "and it must not have touched the chain at all"
+        );
+
+        // One second past the deadline, the same call fires.
+        chain
+            .increase_time(view.challenge_deadline.saturating_sub(now) + 1)
+            .unwrap();
+        assert!(
+            p.confirm_if_ready(20260715).unwrap(),
+            "past the deadline it must confirm, else this test would pass by never confirming"
+        );
+        assert_eq!(chain.ops().len(), ops_after_propose + 1);
     }
 
     #[test]

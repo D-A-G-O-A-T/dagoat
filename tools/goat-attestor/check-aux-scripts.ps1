@@ -1101,7 +1101,20 @@ try {
                     # something that runs.
                     $sLine = Remove-PsLineComment -Line $sLogical.Text
 
-                    if ($sLine -match 'cast\s+(send|call)') {
+                    # `Send-Tx` is `cast send` behind a wrapper, and it must be
+                    # harvested as one. When testnet-up.ps1 routed all 17 of its
+                    # sends through that helper on 2026-07-30 -- to settle the
+                    # nonce after each one against a load-balanced public RPC --
+                    # this extractor stopped seeing them: the tree total fell
+                    # 43 -> 26 and testnet-up.ps1's own contribution fell 20 -> 3.
+                    #
+                    # Check A then had nothing left to check in the file, which
+                    # is the vacuity the two floors below exist to catch, and
+                    # they did catch it. Signature verification for a script that
+                    # broadcasts to a public chain is exactly what must not go
+                    # quiet, so the extractor follows the wrapper rather than the
+                    # floors being lowered to match a blinded extractor.
+                    if ($sLine -match 'cast\s+(send|call)' -or $sLine -match '(^|\s)Send-Tx\s') {
                         foreach ($mm in $castSigRe.Matches($sLine)) {
                             $sigArgs = $mm.Groups['args'].Value -replace '\s', ''
                             $sig     = '{0}({1})' -f $mm.Groups['name'].Value, $sigArgs

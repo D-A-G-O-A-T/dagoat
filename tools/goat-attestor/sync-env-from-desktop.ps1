@@ -132,6 +132,45 @@ if ($null -ne $deployBlock) {
     Write-Host "  WORKER_BINDING_DEPLOY_BLOCK=(not set)"
 }
 if ($ChainId -eq "84532") {
-    Write-Host "  AUTO_WARP must stay off; AUTO_SETTLE opt-in only (Stream B B7/B8)."
+    # 🔴 THIS USED TO BE A Write-Host AND NOTHING ELSE, AND IT DID NOT HOLD.
+    #
+    # Syncing the 31337 lab config to Base Sepolia on 2026-07-30 carried
+    # AUTO_SETTLE=1 and AUTO_WARP=1 straight through onto a PUBLIC chain, while
+    # printing the sentence saying they must not be. Printing is not asserting --
+    # the same defect this repo already records for dev-up.ps1, which exits 0
+    # with a setSystemAddress deleted.
+    #
+    # AUTO_WARP is time manipulation. It is an anvil affordance and there is no
+    # such thing on a real chain, so leaving it on against 84532 is at best a lie
+    # in the config and at worst a relayer that behaves as though it can move the
+    # clock. AUTO_SETTLE settles epochs unattended, which on a public chain is a
+    # thing that should be turned on deliberately, once, by a human.
+    #
+    # So force them, in the file, and say what changed. A warning the operator
+    # has to act on is a warning that eventually does not get acted on.
+    $forced = @()
+    $out = $out | ForEach-Object {
+        if ($_ -match '^AUTO_WARP=(.*)$' -and $matches[1] -ne '0') {
+            $forced += "AUTO_WARP $($matches[1]) -> 0"
+            'AUTO_WARP=0'
+        } elseif ($_ -match '^AUTO_SETTLE=(.*)$' -and $matches[1] -ne '0') {
+            $forced += "AUTO_SETTLE $($matches[1]) -> 0"
+            'AUTO_SETTLE=0'
+        } else {
+            $_
+        }
+    }
+    if ($forced.Count -gt 0) {
+        $out | Set-Content -Encoding ascii $envFile
+        Write-Host "  FORCED OFF for a public chain: $($forced -join ', ')"
+        Write-Host "  (AUTO_WARP is an anvil-only affordance; AUTO_SETTLE is opt-in, by hand.)"
+    } else {
+        Write-Host "  AUTO_WARP and AUTO_SETTLE already off, as a public chain requires."
+    }
+
+    Write-Host "  REVIEW THE RELAYER KEYS: the PROPOSER/WATCHER/CHALLENGER/RELAYER"
+    Write-Host "  private keys in this .env come from the 31337 lab and are anvil dev"
+    Write-Host "  keys whose values are public. They are unfunded on 84532 and hold no"
+    Write-Host "  role here, but do not grant one to them."
 }
 Write-Host 'Restart the relayer: .\start-relayer.ps1'

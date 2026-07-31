@@ -61,6 +61,108 @@ function Invoke-Step {
     if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
         throw "Step failed ($Label) exit=$LASTEXITCODE"
     }
+    # Settle after EVERY step. See Wait-ForMempoolDrain: against a load-balanced
+    # public RPC the next nonce read can be stale even with a receipt in hand,
+    # and the failure surfaces one step later as a confusing "replacement
+    # transaction underpriced" rather than at the step that actually raced.
+    # A step that broadcast nothing settles immediately, so this is nearly free.
+    if ($script:RPC -and $script:SAFE) {
+        Wait-ForMempoolDrain -Rpc $script:RPC -Address $script:SAFE
+    }
+}
+
+# 🔴 THE ANVIL-ONLY ASSUMPTION THAT BROKE THIS SCRIPT ON A REAL CHAIN.
+#
+# `forge script --broadcast` fires every deploy transaction without waiting for
+# receipts. The `cast send` that follows computes its nonce from the LATEST
+# (mined) block, so while the tail of the deploy is still pending it reuses a
+# nonce that is already in the mempool, with no gas bump, and the node answers:
+#
+#   error code -32000: replacement transaction underpriced
+#
+# On anvil this race CANNOT happen -- mining is instant, so `latest` is never
+# behind `pending`. That is exactly why it survived every 31337 run and failed
+# on the first Base Sepolia attempt (2026-07-30): the standup twins had never
+# been exercised against a real testnet, which was a recorded gap, not a
+# surprise.
+#
+# Two layers, because a public RPC can lag its own mempool:
+#   1. `--slow` on every `forge script` (below) -- send one transaction at a
+#      time, waiting for each receipt.
+#   2. This wait -- poll until the node agrees with itself that nothing of ours
+#      is pending, before the first `cast send` of each phase.
+#
+# 🔴 AND `cast send` WAITING FOR ITS OWN RECEIPT IS NOT ENOUGH EITHER.
+#
+# An earlier revision of this comment claimed "cast send already waits for its
+# own receipt, so consecutive sends are safe; only the forge -> cast transition
+# needs this." Measured false on attempt 3: with the drain in place
+# escrow.setVault landed and the very next send, goat.setMinter, died on the
+# same -32000. sepolia.base.org is LOAD-BALANCED -- a receipt in hand does not
+# mean the next `eth_getTransactionCount(latest)` is answered by a node that has
+# seen it. So the wait runs after EVERY broadcasting step, not just after forge.
+#
+# It also requires the reading to be STABLE: latest == pending observed twice in
+# a row, separated by a sleep. One agreeing reading can be two stale answers
+# from the same lagging backend, which is a check that passes for the wrong
+# reason -- the exact shape of vacuous assertion this repo keeps finding.
+function Wait-ForMempoolDrain {
+    param(
+        [string] $Rpc,
+        [string] $Address,
+        [int] $TimeoutSeconds = 180,
+        [int] $StableReadings = 2
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $agreed = 0
+    $lastSeen = ""
+    while ($true) {
+        $latest = (cast nonce $Address --rpc-url $Rpc 2>$null | Out-String).Trim()
+        $pending = (cast nonce $Address --rpc-url $Rpc --block pending 2>$null | Out-String).Trim()
+        if ($latest -ne "" -and $latest -eq $pending -and $latest -eq $lastSeen) {
+            $agreed++
+            if ($agreed -ge $StableReadings) {
+                Write-Host "    nonce settled at $latest ($agreed stable readings)"
+                return
+            }
+        } elseif ($latest -ne "" -and $latest -eq $pending) {
+            $agreed = 1
+        } else {
+            $agreed = 0
+        }
+        $lastSeen = $latest
+        if ((Get-Date) -gt $deadline) {
+            throw "nonce did not settle within ${TimeoutSeconds}s (latest=$latest pending=$pending). Re-running deploys a SECOND stack; do not retry blindly."
+        }
+        Start-Sleep -Seconds 2
+    }
+}
+
+# Every state-changing send goes through here, and the settle is INSIDE it.
+#
+# Attempt 4 put the settle in Invoke-Step, which fixed every single-send step
+# and then failed on `dev-seed GOAT`, a step that issues TWO sends -- the wait
+# ran after the step, never between them. Putting it at the send is the level
+# that has no such gap, and it is one implementation rather than a patch per
+# multi-send step.
+#
+# Deliberately a SIMPLE function (no [CmdletBinding()]) so `$args` collects
+# `--private-key` and friends verbatim; an advanced function would try to bind
+# those as its own parameters. Array splatting into a NATIVE command passes
+# arguments through correctly -- it is only PowerShell functions where an array
+# splat binds positionally, which is the trap that caused the accidental
+# deployment earlier today.
+function Send-Tx {
+    # NOT `Send-Tx @args` -- a sweep that rewrote every `cast send` call site
+    # rewrote this line too and made the helper call itself. Caught by reading
+    # the diff, not by running it; it would have recursed until the stack blew.
+    cast send @args | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "cast send failed (exit=$LASTEXITCODE): $($args -join ' ')"
+    }
+    if ($script:RPC -and $script:SAFE) {
+        Wait-ForMempoolDrain -Rpc $script:RPC -Address $script:SAFE
+    }
 }
 
 function Get-WorkerBindingDeployBlock {
@@ -107,7 +209,17 @@ function Write-EpochWithDeployBlock {
     if (-not (Test-Path $EpochPath)) { return }
     $obj = Get-Content $EpochPath -Raw | ConvertFrom-Json
     $obj | Add-Member -NotePropertyName workerBindingDeployBlock -NotePropertyValue ([int64]$DeployBlock) -Force
-    $obj | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $EpochPath
+    # 🔴 NOT `Set-Content -Encoding utf8`. On Windows PowerShell 5.1 that writes a
+    # UTF-8 BOM, and `JSON.parse` rejects a leading BOM outright. This is the ONLY
+    # manifest PowerShell rewrites -- forge writes the other two -- so 84532.epoch.json
+    # and its desktop copy were the only two files in the deployment carrying one,
+    # which is exactly the kind of asymmetry that gets found by a reader rather
+    # than by the writer. Found 2026-07-30 when the bytecode verifier choked on it.
+    [System.IO.File]::WriteAllText(
+        $EpochPath,
+        ($obj | ConvertTo-Json -Depth 6),
+        (New-Object System.Text.UTF8Encoding($false))
+    )
 }
 
 # --- resolve config ----------------------------------------------------------
@@ -182,8 +294,9 @@ try {
 
     # --- free-market deploy --------------------------------------------------
     Invoke-Step "DeployFreeMarket" {
-        forge script script/DeployFreeMarket.s.sol --rpc-url $RPC --broadcast
-    } "forge script script/DeployFreeMarket.s.sol --rpc-url $RPC --broadcast"
+        forge script script/DeployFreeMarket.s.sol --rpc-url $RPC --broadcast --slow
+    } "forge script script/DeployFreeMarket.s.sol --rpc-url $RPC --broadcast --slow"
+    if (-not $DryRun) { Wait-ForMempoolDrain -Rpc $RPC -Address $SAFE }
 
     if (-not $DryRun) {
         if (-not (Test-Path $DepBase)) { throw "missing $DepBase after deploy" }
@@ -200,31 +313,31 @@ try {
 
     # --- wire free-market ----------------------------------------------------
     Invoke-Step "wire escrow.setVault(workMinter)" {
-        cast send $ESCROW "setVault(address)" $MINTER --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+        Send-Tx $ESCROW "setVault(address)" $MINTER --private-key $SAFE_KEY --rpc-url $RPC
     } "cast send ESCROW setVault(MINTER)"
 
     Invoke-Step "wire goat.setMinter(workMinter,true)" {
-        cast send $GOAT "setMinter(address,bool)" $MINTER true --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+        Send-Tx $GOAT "setMinter(address,bool)" $MINTER true --private-key $SAFE_KEY --rpc-url $RPC
     } "cast send GOAT setMinter(MINTER,true)"
 
     $sys = @($ESCROW, $MINTER, $DESK, $FOUNDER, $RESERVE, $SAFE)
     foreach ($a in $sys) {
         $addr = $a
         Invoke-Step "wire registry.setSystemAddress($addr)" {
-            cast send $REGISTRY "setSystemAddress(address,bool)" $addr true --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+            Send-Tx $REGISTRY "setSystemAddress(address,bool)" $addr true --private-key $SAFE_KEY --rpc-url $RPC
         } "cast send REGISTRY setSystemAddress($addr, true)"
     }
 
     # --- seed (optional) -----------------------------------------------------
     if (-not $SkipSeed) {
         Invoke-Step "mint mockUSDT to founder (10_000 * 1e6)" {
-            cast send $USDT "mint(address,uint256)" $FOUNDER 10000000000 --private-key $DEPLOY_KEY --rpc-url $RPC | Out-Null
+            Send-Tx $USDT "mint(address,uint256)" $FOUNDER 10000000000 --private-key $DEPLOY_KEY --rpc-url $RPC
         } "cast send USDT mint(FOUNDER, 10000000000)"
 
         if ($CHAIN_ID -eq "31337") {
             # Lab-only: seed reserve like dev-up.ps1. Skip on public testnet.
             Invoke-Step "mint mockUSDT to reserve (lab)" {
-                cast send $USDT "mint(address,uint256)" $RESERVE 1000000000 --private-key $DEPLOY_KEY --rpc-url $RPC | Out-Null
+                Send-Tx $USDT "mint(address,uint256)" $RESERVE 1000000000 --private-key $DEPLOY_KEY --rpc-url $RPC
             } "cast send USDT mint(RESERVE, 1000000000)"
         }
 
@@ -235,10 +348,10 @@ try {
         Invoke-Step "dev-seed GOAT via WorkMinter (100 GOAT to FOUNDER)" {
             $used = cast call $MINTER "usedManifest(bytes32)(bool)" $DEV_MANIFEST --rpc-url $RPC
             if ($used.Trim() -ne "true") {
-                cast send $MINTER "createJob(bytes32,bytes32,uint256,uint16,address,bool)" `
+                Send-Tx $MINTER "createJob(bytes32,bytes32,uint256,uint16,address,bool)" `
                     $DEV_JOB $DEV_CATALOG 1000000000000000000 0 0x0000000000000000000000000000000000000000 true `
                     --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
-                cast send $MINTER "mintBatch(bytes32,bytes32,address[],uint256[])" `
+                Send-Tx $MINTER "mintBatch(bytes32,bytes32,address[],uint256[])" `
                     $DEV_JOB $DEV_MANIFEST "[$FOUNDER]" "[100]" `
                     --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
             } else {
@@ -255,8 +368,9 @@ try {
     }
 
     Invoke-Step "DeployBuyDeskFactory" {
-        forge script script/DeployBuyDeskFactory.s.sol --rpc-url $RPC --broadcast
-    } "forge script script/DeployBuyDeskFactory.s.sol --rpc-url $RPC --broadcast"
+        forge script script/DeployBuyDeskFactory.s.sol --rpc-url $RPC --broadcast --slow
+    } "forge script script/DeployBuyDeskFactory.s.sol --rpc-url $RPC --broadcast --slow"
+    if (-not $DryRun) { Wait-ForMempoolDrain -Rpc $RPC -Address $SAFE }
 
     if (-not $DryRun) {
         $f = Get-Content $DepFactory -Raw | ConvertFrom-Json
@@ -266,7 +380,7 @@ try {
     }
 
     Invoke-Step "factory.createDesk(Founder Desk)" {
-        cast send $FACTORY "createDesk(string)" "Founder Desk" --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+        Send-Tx $FACTORY "createDesk(string)" "Founder Desk" --private-key $SAFE_KEY --rpc-url $RPC
     } "cast send FACTORY createDesk('Founder Desk')"
 
     if (-not $DryRun) {
@@ -277,15 +391,15 @@ try {
 
     # System-flag founder desk so sells are not TransferRestricted on owner path edge cases.
     Invoke-Step "registry.setSystemAddress(founderDesk)" {
-        cast send $REGISTRY "setSystemAddress(address,bool)" $FOUNDER_DESK true --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+        Send-Tx $REGISTRY "setSystemAddress(address,bool)" $FOUNDER_DESK true --private-key $SAFE_KEY --rpc-url $RPC
     } "setSystemAddress(FOUNDER_DESK)"
 
     $CAP_MAX = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
     Invoke-Step "USDT.approve(founderDesk, 5000e6) + openSession ~1yr" {
-        cast send $USDT "approve(address,uint256)" $FOUNDER_DESK 5000000000 --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+        Send-Tx $USDT "approve(address,uint256)" $FOUNDER_DESK 5000000000 --private-key $SAFE_KEY --rpc-url $RPC
         $sesNow = [int][double]::Parse((Get-Date -UFormat %s)) - 3600
         $sesEnd = $sesNow + 31536000
-        cast send $FOUNDER_DESK "openSession(uint64,uint64,uint256)" $sesNow $sesEnd $CAP_MAX --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+        Send-Tx $FOUNDER_DESK "openSession(uint64,uint64,uint256)" $sesNow $sesEnd $CAP_MAX --private-key $SAFE_KEY --rpc-url $RPC
     } "approve + openSession"
 
     # --- EpochSettlement lane ------------------------------------------------
@@ -306,8 +420,9 @@ try {
         # --sig reaches DeployEpochSettlement::run() and reverts ChainNotAllowed()
         # instead, which is what proves the flag is the difference.
         Invoke-Step "DeployEpochSettlement" {
-            forge script script/DeployEpochSettlement.s.sol --sig "run()" --rpc-url $RPC --broadcast
-        } "forge script script/DeployEpochSettlement.s.sol --sig `"run()`" --rpc-url $RPC --broadcast"
+            forge script script/DeployEpochSettlement.s.sol --sig "run()" --rpc-url $RPC --broadcast --slow
+        } "forge script script/DeployEpochSettlement.s.sol --sig `"run()`" --rpc-url $RPC --broadcast --slow"
+        if (-not $DryRun) { Wait-ForMempoolDrain -Rpc $RPC -Address $SAFE }
 
         if (-not $DryRun) {
             $e = Get-Content $DepEpoch -Raw | ConvertFrom-Json
@@ -344,22 +459,22 @@ try {
         } "cast call RESOLVER settlement()(address) must equal EPOCH_SETTLE (hard throw on mismatch)"
 
         Invoke-Step "wire epoch escrow.setVault(settlement)" {
-            cast send $EPOCH_ESCROW "setVault(address)" $EPOCH_SETTLE --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+            Send-Tx $EPOCH_ESCROW "setVault(address)" $EPOCH_SETTLE --private-key $SAFE_KEY --rpc-url $RPC
         } "epochHoldbackEscrow.setVault(epochSettlement)"
 
         Invoke-Step "wire goat.setMinter(epochSettlement,true)" {
-            cast send $GOAT "setMinter(address,bool)" $EPOCH_SETTLE true --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+            Send-Tx $GOAT "setMinter(address,bool)" $EPOCH_SETTLE true --private-key $SAFE_KEY --rpc-url $RPC
         } "goat.setMinter(epochSettlement,true)"
 
         Invoke-Step "wire registry system flags (epoch)" {
-            cast send $REGISTRY "setSystemAddress(address,bool)" $EPOCH_SETTLE true --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
-            cast send $REGISTRY "setSystemAddress(address,bool)" $EPOCH_ESCROW true --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
-            cast send $EPOCH_SETTLE "setResolver(address)" $EPOCH_RESOLVER --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+            Send-Tx $REGISTRY "setSystemAddress(address,bool)" $EPOCH_SETTLE true --private-key $SAFE_KEY --rpc-url $RPC
+            Send-Tx $REGISTRY "setSystemAddress(address,bool)" $EPOCH_ESCROW true --private-key $SAFE_KEY --rpc-url $RPC
+            Send-Tx $EPOCH_SETTLE "setResolver(address)" $EPOCH_RESOLVER --private-key $SAFE_KEY --rpc-url $RPC
         } "setSystemAddress + setResolver"
 
         # Enroll founder (SAFE path) so desk owner is not blocked.
         Invoke-Step "registry.setEnrolled(FOUNDER)" {
-            cast send $REGISTRY "setEnrolled(address,bool,bytes32)" $FOUNDER true $ZERO32 --private-key $SAFE_KEY --rpc-url $RPC | Out-Null
+            Send-Tx $REGISTRY "setEnrolled(address,bool,bytes32)" $FOUNDER true $ZERO32 --private-key $SAFE_KEY --rpc-url $RPC
         } "setEnrolled(FOUNDER)"
     }
 

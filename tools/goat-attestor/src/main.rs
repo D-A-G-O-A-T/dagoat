@@ -392,20 +392,33 @@ fn cmd_once_propose(cfg: &Config, epoch: Option<u64>, fixtures: Option<PathBuf>)
     Ok(())
 }
 
+/// # Exit code
+///
+/// **Non-zero on a failed confirm.** This used to `warn!` and return `Ok(())`
+/// unconditionally, so the process exited **0 on a reverted transaction** — and
+/// the two reverts it can actually hit here, `NotWatcher()` and `WindowOpen()`,
+/// are exactly the ones an operator runs this command to rule out. Verifying a
+/// watcher-key rotation by this command's exit status would have "passed"
+/// against a key that cannot confirm anything.
+///
+/// The MockChain note is still printed, because it explains a legitimate
+/// process-local failure — but it no longer converts that failure into success.
 fn cmd_once_confirm(cfg: &Config, epoch: u64) -> Result<()> {
     let chain = open_chain(cfg)?;
     match chain.confirm_epoch(epoch) {
-        Ok(tx) => info!("confirmed epoch {epoch} tx=0x{}", hex::encode(tx)),
+        Ok(tx) => {
+            info!("confirmed epoch {epoch} tx=0x{}", hex::encode(tx));
+            Ok(())
+        }
         Err(e) => {
-            warn!("confirm_epoch({epoch}): {e}");
             if cfg.mock_mode {
                 info!(
                     "note: MockChain is process-local; use `run` for propose+confirm in one process"
                 );
             }
+            Err(anyhow::anyhow!("confirm_epoch({epoch}): {e}"))
         }
     }
-    Ok(())
 }
 
 fn cmd_once_challenge(
