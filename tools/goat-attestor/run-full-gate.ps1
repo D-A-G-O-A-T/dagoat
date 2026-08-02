@@ -521,6 +521,25 @@ $NodeParityTests = @(
     'test/ProxyFmtScope.test.mjs'
 )
 
+# Fixtures that run HERE but cannot run in `.github/workflows/contracts.yml`,
+# because they measure the internal tree rather than the product.
+#
+# `ProxyFmtScope.test.mjs` sweeps every command surface in the repository with a
+# floor of 100 files -- 381 measured internally, and **46** in the exported tree,
+# because most of what it reads (the private doc trees, the internal scripts) is
+# unpublished by design. Adding it to CI reds that job with `sweep read only 46
+# command files`; measured, not predicted, by running CI's exact node command
+# inside the mirror before pushing.
+#
+# This exists so the difference between the two lists is DECLARED and asserted
+# rather than discovered. `Assert-CiPinsMatch` requires CI to run exactly
+# `$NodeParityTests` minus this set, and requires every entry here to be a
+# fixture this gate actually runs -- excluding one nobody runs would exclude
+# nothing and hide the next real gap.
+$NodeParityInternalOnly = @(
+    'test/ProxyFmtScope.test.mjs'
+)
+
 # ---------------------------------------------------------------------------
 # Plumbing
 # ---------------------------------------------------------------------------
@@ -1039,10 +1058,14 @@ function Assert-CiPinsMatch {
     $contractsText = Get-Content $contractsYml -Raw
     $ciText        = Get-Content $ciYml -Raw
 
-    # (label, regex, source text, expected value)
+    # EQUALITIES ONLY. `EXPECTED_NODE_PARITY_TESTS` is deliberately NOT here:
+    # CI runs a strict subset of this gate's fixtures, so 13 there against 18
+    # here is correct, and asserting equality would force one of the two to be
+    # wrong. It is read below instead, and step 5 EXECUTES CI's subset and
+    # compares against it -- a pin nothing measures is how the previous version
+    # of this problem survived.
     $checks = @(
-        @{ Label = 'EXPECTED_FORGE_TESTS';       Pattern = 'EXPECTED_FORGE_TESTS:\s*"(\d+)"';       Text = $contractsText; Expect = $ExpectedForgeTests;      Mine = '$ExpectedForgeTests' }
-        @{ Label = 'EXPECTED_NODE_PARITY_TESTS'; Pattern = 'EXPECTED_NODE_PARITY_TESTS:\s*"(\d+)"'; Text = $contractsText; Expect = $ExpectedNodeParityTests; Mine = '$ExpectedNodeParityTests' }
+        @{ Label = 'EXPECTED_FORGE_TESTS'; Pattern = 'EXPECTED_FORGE_TESTS:\s*"(\d+)"'; Text = $contractsText; Expect = $ExpectedForgeTests; Mine = '$ExpectedForgeTests' }
     )
 
     foreach ($c in $checks) {
@@ -1060,6 +1083,70 @@ function Assert-CiPinsMatch {
                 "the suite size -- a green gate with a stale workflow pin means CI is red and " +
                 "this script cannot see it.")
         }
+    }
+
+    # CI's node parity pin, read rather than compared, and handed to step 5 to
+    # be checked by EXECUTION against the subset CI actually runs.
+    $mn = [regex]::Match($contractsText, 'EXPECTED_NODE_PARITY_TESTS:\s*"(\d+)"')
+    if (-not $mn.Success) {
+        Fail-Step -Name 'CI pin agreement' -Reason (
+            'could not find EXPECTED_NODE_PARITY_TESTS in contracts.yml -- the pattern found ' +
+            'NOTHING, which is a broken check, not a passing one.')
+    }
+    $script:CiExpectedNodeParityTests = [int]$mn.Groups[1].Value
+    if ($script:CiExpectedNodeParityTests -le 0 -or
+        $script:CiExpectedNodeParityTests -gt $ExpectedNodeParityTests) {
+        Fail-Step -Name 'CI pin agreement' -Reason (
+            "EXPECTED_NODE_PARITY_TESTS is $($script:CiExpectedNodeParityTests), which cannot be " +
+            "right: CI runs a SUBSET of this gate's fixtures, so it must be between 1 and " +
+            "$ExpectedNodeParityTests.")
+    }
+
+    # THE NODE PARITY *FILE LIST*, not just its count.
+    #
+    # Comparing the counts alone is not enough, and that is measured too: both
+    # sides read 18 while contracts.yml's `node --test` line named only the
+    # first two of this gate's four fixtures. CI therefore demanded 18 passes
+    # from a run that could only ever produce 10, and failed -- with the pins in
+    # perfect agreement. Two numbers matching is not the two sides doing the
+    # same work, and the number is downstream of the work.
+    $nodeLine = [regex]::Match($contractsText, '(?m)^\s*node\s+--test\s+(?<files>[^|]+?)\s*\|\s*tee')
+    if (-not $nodeLine.Success) {
+        Fail-Step -Name 'CI pin agreement' -Reason (
+            'could not find the `node --test ... | tee` line in contracts.yml -- the pattern ' +
+            'found NOTHING, which is a broken check, not a passing one.')
+    }
+    $ciFixtures = @($nodeLine.Groups['files'].Value -split '[\s\\]+' |
+        Where-Object { $_ -like '*.mjs' } |
+        ForEach-Object { $_.Trim().Replace('\', '/') } | Sort-Object)
+    $expectedCiFixtures = @($NodeParityTests |
+        ForEach-Object { $_.Replace('\', '/') } |
+        Where-Object { $NodeParityInternalOnly -notcontains $_ } | Sort-Object)
+    if ($ciFixtures.Count -lt 2) {
+        Fail-Step -Name 'CI pin agreement' -Reason (
+            "vacuity guard: parsed only $($ciFixtures.Count) fixture(s) out of contracts.yml's " +
+            'node line; the parser is broken and a comparison against it proves nothing.')
+    }
+    # The internal-only set must be a real subset of what this gate runs, or the
+    # subtraction above silently widens what CI is expected to run.
+    foreach ($f in $NodeParityInternalOnly) {
+        if ($NodeParityTests -notcontains $f) {
+            Fail-Step -Name 'CI pin agreement' -Reason (
+                "`$NodeParityInternalOnly names $f, which `$NodeParityTests does not run. " +
+                'Excluding a fixture nobody runs excludes nothing and hides the next real gap.')
+        }
+    }
+    $onlyCi   = @($ciFixtures         | Where-Object { $expectedCiFixtures -notcontains $_ })
+    $onlyGate = @($expectedCiFixtures | Where-Object { $ciFixtures         -notcontains $_ })
+    if ($onlyCi.Count -or $onlyGate.Count) {
+        Fail-Step -Name 'CI pin agreement' -Reason (
+            "the node parity FIXTURE LIST differs. Only in contracts.yml: " +
+            "$(if ($onlyCi.Count) { $onlyCi -join ', ' } else { '(none)' }). " +
+            "Expected there but absent: " +
+            "$(if ($onlyGate.Count) { $onlyGate -join ', ' } else { '(none)' }). " +
+            'CI must run exactly `$NodeParityTests minus `$NodeParityInternalOnly. The counts ' +
+            'can agree while the two sides run different files -- that is exactly how CI came ' +
+            'to demand 18 passes from a 10-test run. Fix the list, not the number.')
     }
 
     # The exported .ps1 count CI pins, against the curator's publication record.
@@ -1085,8 +1172,12 @@ function Assert-CiPinsMatch {
     }
 
     Add-StepResult -Name 'CI pin agreement' -Status 'PASS' -Detail (
-        "forge $ExpectedForgeTests, node $ExpectedNodeParityTests, exported .ps1 $published")
-    Write-Host "CI pins agree: forge $ExpectedForgeTests, node parity $ExpectedNodeParityTests, exported .ps1 $published"
+        "forge $ExpectedForgeTests, node $($ciFixtures.Count)/$($NodeParityTests.Count) " +
+        "fixtures pinned $script:CiExpectedNodeParityTests (verified by execution in step 5), " +
+        "exported .ps1 $published")
+    Write-Host ("CI pins agree: forge $ExpectedForgeTests, node parity " +
+                "$($ciFixtures.Count) of $($NodeParityTests.Count) fixtures pinned " +
+                "$script:CiExpectedNodeParityTests, exported .ps1 $published")
 }
 
 $overallStart = Get-Date
@@ -1637,8 +1728,38 @@ try {
     if ($n.Passed -ne $ExpectedNodeParityTests) {
         Fail-Step -Name 'node parity fixtures' -Reason "$($n.Passed) passed, expected exactly $ExpectedNodeParityTests -- a fixture was deleted; bump `$ExpectedNodeParityTests deliberately if one was added"
     }
+    # CI'S SUBSET, RUN FOR REAL, because its pinned count is a DIFFERENT number
+    # and nothing above measures it. `Assert-CiPinsMatch` proves CI runs the
+    # right FILES; only executing them proves CI's count is the right NUMBER,
+    # and an unmeasured pin is how this step's own count came to demand 18
+    # passes from a run that could produce 10.
+    #
+    # The subset is tree-independent -- these fixtures read a fixed path list,
+    # not the tree -- so 13 here is 13 on the runner. That is measured on both
+    # trees, not assumed, and if it ever stops being true this comparison is
+    # what says so.
+    $ciSubset = @($NodeParityTests | Where-Object { $NodeParityInternalOnly -notcontains $_ })
+    $rc = Invoke-Tool -Exe 'node' -ToolArgs (@('--test') + $ciSubset) -WorkDir $ContractsDir `
+        -LogName 'node-parity-ci-subset' -StepName 'node parity fixtures'
+    $nc = Get-NodeTestCounts -Text $rc.All
+    if ($null -eq $nc) {
+        Fail-Step -Name 'node parity fixtures' -Reason 'could not parse the CI-subset run''s summary block'
+    }
+    if ($rc.ExitCode -ne 0 -or $nc.Failed -ne 0) {
+        Fail-Step -Name 'node parity fixtures' -Reason (
+            "CI's subset of the parity fixtures FAILED here ($($nc.Passed) passed, " +
+            "$($nc.Failed) failed, exit $($rc.ExitCode)). CI runs exactly these files, so it " +
+            'will fail the same way.')
+    }
+    if ($nc.Passed -ne $CiExpectedNodeParityTests) {
+        Fail-Step -Name 'node parity fixtures' -Reason (
+            "CI's subset ($($ciSubset -join ', ')) passes $($nc.Passed) test(s) here, but " +
+            "contracts.yml pins EXPECTED_NODE_PARITY_TESTS = $CiExpectedNodeParityTests. CI " +
+            'will demand a number its own file list cannot produce. Fix the workflow pin.')
+    }
     Add-StepResult -Name 'node parity fixtures' -Status 'PASS' `
-        -Detail "$($n.Passed) passed / $($n.Failed) failed across $($NodeParityTests.Count) file(s)"
+        -Detail ("$($n.Passed) passed / $($n.Failed) failed across $($NodeParityTests.Count) file(s); " +
+                 "CI's $($ciSubset.Count)-file subset $($nc.Passed) passed = its pinned $CiExpectedNodeParityTests")
 
     # -----------------------------------------------------------------------
     # STEP 6 -- EIP-170 size assertion

@@ -331,7 +331,12 @@ pub fn run() {
         .run(|_app, event| {
             // Log clean exits so "app closed" without crash.log can be diagnosed.
             match event {
-                tauri::RunEvent::ExitRequested { api: _, .. } => {
+                // `api: _` was explicit here and `..` already covers it; clippy
+                // 1.97's `unneeded_wildcard_pattern` rejects the pair. Local
+                // clippy is 0.1.96 and does not, which is the hazard the gate
+                // records as "CI floats @stable" -- this lint was invisible from
+                // the developer machine and red on the runner.
+                tauri::RunEvent::ExitRequested { .. } => {
                     append_app_log("exit.log", "ExitRequested (window close or host stop)");
                 }
                 tauri::RunEvent::Exit => {

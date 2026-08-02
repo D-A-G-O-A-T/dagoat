@@ -54,7 +54,11 @@ env:
   # `Assert-CiPinsMatch` in run-full-gate.ps1. Both sides still have to be
   # edited by hand; only the drift is now impossible to miss.
   EXPECTED_FORGE_TESTS: "315"
-  EXPECTED_NODE_PARITY_TESTS: "18"
+  # 13, NOT the gate's 18: this job runs three of the gate's four parity
+  # fixtures (see the `node --test` step for why the fourth cannot run here).
+  # Measured 13 in BOTH trees, so the subset is tree-independent; the gate runs
+  # this exact subset a second time and asserts it still equals this number.
+  EXPECTED_NODE_PARITY_TESTS: "13"
   # EIP-170 deployed-code cap. GoatRelayGateway was 33,914 bytes once; the
   # refactor into libraries brought it to 12,944. Nothing but an assertion keeps
   # it there.
@@ -125,7 +129,23 @@ jobs:
       - name: Node parity fixtures (count pinned)
         run: |
           set -o pipefail
-          node --test test/StreamGManifest.test.mjs test/keccak256.test.mjs | tee node-parity.log
+          # THIS LIST IS $NodeParityTests FROM run-full-gate.ps1 MINUS
+          # $NodeParityInternalOnly, and Assert-CiPinsMatch asserts exactly that
+          # relationship -- the list, not just the count.
+          #
+          # The count alone was not sufficient and that is measured: both pins
+          # read 18 while this line named only the first two files, so CI
+          # demanded 18 passes from a run that could only ever produce 10.
+          # Numbers agreeing is not the two sides doing the same work.
+          #
+          # ProxyFmtScope.test.mjs is deliberately ABSENT and cannot simply be
+          # added. It sweeps every command surface in the tree with a floor of
+          # 100 files (381 measured internally); the exported tree has 46,
+          # because most of what it reads is unpublished by design. It is an
+          # internal-tree fixture, declared as one in the gate rather than left
+          # to whoever next wonders why the lists differ.
+          node --test test/StreamGManifest.test.mjs test/keccak256.test.mjs \
+                      test/ProxyNoBurnSource.test.mjs | tee node-parity.log
           passed=$(grep -oE '(^|[^0-9])pass [0-9]+' node-parity.log | tail -n 1 | grep -oE '[0-9]+')
           failed=$(grep -oE '(^|[^0-9])fail [0-9]+' node-parity.log | tail -n 1 | grep -oE '[0-9]+')
           echo "node parity: pass=${passed} fail=${failed} expected=${EXPECTED_NODE_PARITY_TESTS}"

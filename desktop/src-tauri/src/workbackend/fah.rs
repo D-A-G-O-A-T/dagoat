@@ -2063,6 +2063,17 @@ fn fah_process_running() -> bool {
 /// (`fah-client.exe`, what Task Manager shows for a Goat-managed engine) and the legacy
 /// system-installer name (`FAHClient.exe`). Pure and testable — building the command list stays
 /// separate from actually spawning `taskkill`.
+///
+/// DEAD ON NON-WINDOWS, DELIBERATELY. `taskkill` is a Windows program and the
+/// only caller is inside `#[cfg(windows)]`, so on Linux this and the five items
+/// below are genuinely unreferenced by the library — `-D warnings` turns that
+/// into `-D dead-code` and fails the build. Suppressed only for the platform
+/// where it is true: on Windows dead code is still an error, so a caller
+/// deleted there is still caught. The alternative, `#[cfg(windows)]` on the
+/// functions themselves, would take their tests with them and stop Linux
+/// checking argument-construction logic that has nothing platform-specific
+/// about it.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn taskkill_invocations() -> Vec<Vec<String>> {
     ["fah-client.exe", "FAHClient.exe"]
         .into_iter()
@@ -2071,6 +2082,7 @@ fn taskkill_invocations() -> Vec<Vec<String>> {
 }
 
 /// Graceful close request (no `/F`) — tried before the forced kill. Same two image names.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn taskkill_invocations_graceful() -> Vec<Vec<String>> {
     ["fah-client.exe", "FAHClient.exe"]
         .into_iter()
@@ -2081,6 +2093,7 @@ fn taskkill_invocations_graceful() -> Vec<Vec<String>> {
 /// `taskkill` exit codes: `0` = terminated, `128` = no such process — fine, Stop is idempotent
 /// (clicking it when FAH isn't running is not an error) — anything else (e.g. `1` access denied)
 /// is a real failure the UI must show.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn taskkill_outcome(code: Option<i32>) -> Result<bool, String> {
     match code {
         Some(0) => Ok(true),
@@ -2117,6 +2130,7 @@ fn kill_fah_client() -> Result<bool, String> {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn graceful_then_kill_with(
     wait: Duration,
     poll_step: Duration,
@@ -2141,7 +2155,9 @@ fn graceful_then_kill_with(
 /// that `taskkill /IM` (no `/F`) sends, so a long window just burns shutdown time while the
 /// process keeps running; FAH v8 checkpoints make the force-kill safe (same basis as Stop's
 /// kill-process copy law). ~2s still covers a client variant that does honor the close.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const B9_GRACEFUL_WAIT: Duration = Duration::from_secs(2);
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const B9_GRACEFUL_POLL: Duration = Duration::from_millis(200);
 
 /// B9 (founder decision 2026-07-18): closing GoatApp stops the FAH client. Graceful close
