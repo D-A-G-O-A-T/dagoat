@@ -51,6 +51,7 @@ contract GoatRelayGateway is EIP712, ReentrancyGuard {
     error DeskMismatch();
     error DeskCodeHashMismatch();
     error DeskAlreadySet();
+    error ProxyAlreadySet();
     error BadIntentSignature();
     error BadGoatPermit();
     error BadPriorAllowance();
@@ -70,6 +71,15 @@ contract GoatRelayGateway is EIP712, ReentrancyGuard {
     address public quoteSigner;
     address public sponsoredBuyDesk;
     bytes32 public sponsoredBuyDeskCodeHash;
+
+    /// Residential-proxy settlement bindings. Plain `address`, deliberately not
+    /// the contract types: the gateway calls neither today, and importing the
+    /// proxy sources here would pull their type machinery into the largest
+    /// contract in the tree for no behaviour. They are read by operators and by
+    /// deploy scripts wiring the two trees together, not by any hot path, so
+    /// they are also NOT members of `_ctx()`.
+    address public proxyRevenueSettlement;
+    address public proxyConsumerRegistry;
 
     /// actionNonces[signer][actionType] — sequential gateway action nonces.
     mapping(address => mapping(bytes32 => uint256)) public actionNonces;
@@ -91,6 +101,8 @@ contract GoatRelayGateway is EIP712, ReentrancyGuard {
         uint256 feeAmount
     );
     event SponsoredBuyDeskSet(address indexed desk, bytes32 codeHash);
+    event ProxyRevenueSettlementSet(address indexed settlement);
+    event ProxyConsumerRegistrySet(address indexed registry);
     event SponsoredSellExecuted(
         bytes32 indexed intentId,
         address indexed seller,
@@ -178,6 +190,24 @@ contract GoatRelayGateway is EIP712, ReentrancyGuard {
         emit SponsoredBuyDeskSet(desk_, codeHash);
     }
 
+    /// One-shot ProxyRevenueSettlement binding. Recorded for operators and for
+    /// the deploy scripts that wire the proxy tree to this gateway; no code
+    /// path in this contract calls it.
+    function setProxyRevenueSettlement(address settlement_) external onlyPolicy {
+        if (settlement_ == address(0)) revert ZeroAddress();
+        if (proxyRevenueSettlement != address(0)) revert ProxyAlreadySet();
+        proxyRevenueSettlement = settlement_;
+        emit ProxyRevenueSettlementSet(settlement_);
+    }
+
+    /// One-shot ProxyConsumerRegistry binding. Same terms as above.
+    function setProxyConsumerRegistry(address registry_) external onlyPolicy {
+        if (registry_ == address(0)) revert ZeroAddress();
+        if (proxyConsumerRegistry != address(0)) revert ProxyAlreadySet();
+        proxyConsumerRegistry = registry_;
+        emit ProxyConsumerRegistrySet(registry_);
+    }
+
     /// One-shot activation after children bind and Policy Safe precommits hashes.
     function activate() external onlyPolicy {
         if (activated) revert AlreadyActivated();
@@ -211,31 +241,32 @@ contract GoatRelayGateway is EIP712, ReentrancyGuard {
     }
 
     /// General advisory snapshot. Rejects unknown action types.
-    function nonceSnapshot(
-        bytes32 actionType,
-        address signer,
-        address root,
-        address secondary,
-        address feeToken
-    ) external view returns (StreamGTypes.NonceSnapshot memory) {
+    function nonceSnapshot(bytes32 actionType, address signer, address root, address secondary, address feeToken)
+        external
+        view
+        returns (StreamGTypes.NonceSnapshot memory)
+    {
         if (!_isKnownAction(actionType)) revert UnknownActionType();
         return _snapshot(actionType, signer, root, secondary, feeToken);
     }
 
+    /// The recognised action types — the set with a reserved nonce namespace
+    /// and a fee-schedule row. Recognition is NOT sponsorability: the three
+    /// `ACTION_PROXY_*` rows have no `execute*` entrypoint on this gateway, so
+    /// recognising them widens `nonceSnapshot` and nothing else.
     function _isKnownAction(bytes32 actionType) internal pure returns (bool) {
         return actionType == StreamGTypes.ACTION_SPONSORED_ENROLLMENT
-            || actionType == StreamGTypes.ACTION_SPONSORED_SELL
-            || actionType == StreamGTypes.ACTION_GOAT_TRANSFER
-            || actionType == StreamGTypes.ACTION_USDT_TRANSFER;
+            || actionType == StreamGTypes.ACTION_SPONSORED_SELL || actionType == StreamGTypes.ACTION_GOAT_TRANSFER
+            || actionType == StreamGTypes.ACTION_USDT_TRANSFER || actionType == StreamGTypes.ACTION_PROXY_CLAIM
+            || actionType == StreamGTypes.ACTION_PROXY_PROPOSE_BATCH
+            || actionType == StreamGTypes.ACTION_PROXY_CHALLENGE_BATCH;
     }
 
-    function _snapshot(
-        bytes32 actionType,
-        address signer,
-        address root,
-        address secondary,
-        address feeToken
-    ) internal view returns (StreamGTypes.NonceSnapshot memory snap) {
+    function _snapshot(bytes32 actionType, address signer, address root, address secondary, address feeToken)
+        internal
+        view
+        returns (StreamGTypes.NonceSnapshot memory snap)
+    {
         // Snapshot is advisory only — never consumes nonces/intents.
         address controller = sponsorship.controllerOf(root);
         if (controller == address(0)) {
@@ -391,13 +422,7 @@ contract GoatRelayGateway is EIP712, ReentrancyGuard {
         );
 
         emit SponsoredSellExecuted(
-            intent.intentId,
-            intent.seller,
-            intent.expectedRoot,
-            intent.desk,
-            intent.goatAmount,
-            feeAmount,
-            netUsdtOut
+            intent.intentId, intent.seller, intent.expectedRoot, intent.desk, intent.goatAmount, feeAmount, netUsdtOut
         );
     }
 
@@ -480,5 +505,4 @@ contract GoatRelayGateway is EIP712, ReentrancyGuard {
     function _feeQuoteStructHash(StreamGTypes.FeeQuote calldata quote) internal pure returns (bytes32) {
         return StreamGHashes.feeQuoteStructHash(quote);
     }
-
 }

@@ -181,10 +181,10 @@ use sqlx::Row;
 use thiserror::Error;
 
 use super::base_fee::{BaseFeeError, WeiCeiling};
-use super::crypto_store::{self, CryptoStoreError, DataKey, EnvelopeAad, SecretHex};
 use super::broadcaster::{
     self, BroadcastOutcome, BroadcastPlan, BroadcasterError, SponsoredEnrollmentTxSigner,
 };
+use super::crypto_store::{self, CryptoStoreError, DataKey, EnvelopeAad, SecretHex};
 use super::http_error::{ApiError, ApiJson};
 use super::models::{ActionType, FeeQuote, LinkSecondary};
 // 🔴 Wave C W2. `outbox`'s *functions* are no longer called from this
@@ -3345,11 +3345,11 @@ mod tests {
     // 🔴 Wave C W2. These three left the module's top-level imports when the
     // production path stopped calling `outbox` directly; the fixtures that
     // drive the reservation by hand still need them.
-    use crate::stream_g::outbox::{self, ReservationRequest, SignedRawTx};
     use crate::stream_g::models::{
         fee_quote_digest, link_secondary_digest, sponsor_enrollment_core_hash, FeeQuote,
         LinkSecondary, SponsorEnrollmentCore,
     };
+    use crate::stream_g::outbox::{self, ReservationRequest, SignedRawTx};
     use crate::stream_g::preflight::{
         sponsor_enrollment_digest, Eip2612Authorization, RootAuthorization, SponsorEnrollment,
         V1Enrollment, AUTHORIZATION_MODE_EIP2612,
@@ -5631,9 +5631,15 @@ mod tests {
             tx_hash: TX_HASH,
             block: BLOCK + 1,
         };
-        reconcile_sponsored_enrollment_executed(&h.store, &data_key_hex(), &profile(), &event, WALL_NOW)
-            .await
-            .expect("reconcile");
+        reconcile_sponsored_enrollment_executed(
+            &h.store,
+            &data_key_hex(),
+            &profile(),
+            &event,
+            WALL_NOW,
+        )
+        .await
+        .expect("reconcile");
 
         assert_eq!(
             text(
@@ -5662,10 +5668,15 @@ mod tests {
         // named is still a mismatch, so "find by hash" is not "find anything".
         let mut other = event;
         other.tx_hash = [0x7E; 32];
-        let err =
-            reconcile_sponsored_enrollment_executed(&h.store, &data_key_hex(), &profile(), &other, WALL_NOW)
-                .await
-                .expect_err("an unrelated transaction is not this intent's confirmation");
+        let err = reconcile_sponsored_enrollment_executed(
+            &h.store,
+            &data_key_hex(),
+            &profile(),
+            &other,
+            WALL_NOW,
+        )
+        .await
+        .expect_err("an unrelated transaction is not this intent's confirmation");
         assert!(
             matches!(err, SubmitError::ReconcileMismatch { field: "tx_hash" }),
             "{err:?}"
@@ -5987,7 +5998,10 @@ mod tests {
         assert_eq!(parsed.intent, expected.intent);
         assert_eq!(parsed.v1_enrollment, expected.v1_enrollment);
         assert_eq!(parsed.link, expected.link);
-        assert_eq!(parsed.fee_authorization_mode, expected.fee_authorization_mode);
+        assert_eq!(
+            parsed.fee_authorization_mode,
+            expected.fee_authorization_mode
+        );
         assert_eq!(
             parsed.fee_eip2612_authorization,
             expected.fee_eip2612_authorization
@@ -6068,8 +6082,9 @@ mod tests {
             body.as_object_mut()
                 .unwrap()
                 .insert(stale.to_string(), serde_json::json!("0x00"));
-            let err = serde_json::from_value::<SubmitSponsoredEnrollmentRequest>(body)
-                .expect_err(&format!("`{stale}` must not be accepted on the submit body"));
+            let err = serde_json::from_value::<SubmitSponsoredEnrollmentRequest>(body).expect_err(
+                &format!("`{stale}` must not be accepted on the submit body"),
+            );
             assert!(
                 err.to_string().contains("unknown field"),
                 "expected an unknown-field rejection for `{stale}`, got: {err}"
@@ -6257,10 +6272,16 @@ mod tests {
             preflight::UNVERIFIED_CHECKS.len()
         );
         assert_eq!(wire.unverified_checks.len(), wire.unverified_check_count);
-        assert!(wire.unverified_check_count > 0, "a 200 must never read as \"this will succeed\"");
+        assert!(
+            wire.unverified_check_count > 0,
+            "a 200 must never read as \"this will succeed\""
+        );
         for u in preflight::UNVERIFIED_CHECKS {
             // Names only: the multi-line `why` prose stays server-side.
-            assert!(!json.contains(u.why), "unverified prose must not be shipped");
+            assert!(
+                !json.contains(u.why),
+                "unverified prose must not be shipped"
+            );
         }
         assert_eq!(wire.tx_hash_hex, bytes32_hex(TX_HASH));
     }
@@ -6321,7 +6342,10 @@ mod tests {
         // that `intent.feeQuoteHash` (unchanged, and covered by the
         // controller's sponsor signature) names the original digest.
         g.quote.fee_amount += 1;
-        g.quote_sig = sign(QUOTE_SIGNER_KEY, fee_quote_digest(&g.quote, CHAIN_ID, GATEWAY));
+        g.quote_sig = sign(
+            QUOTE_SIGNER_KEY,
+            fee_quote_digest(&g.quote, CHAIN_ID, GATEWAY),
+        );
         let h = harness(&g).await;
         let b = FakeSigner::ok();
 
@@ -6460,7 +6484,10 @@ mod tests {
             // Re-sign the mutated quote with the REAL quote signer, so
             // `Check::BadQuoteSignature` cannot be what fires. The intent —
             // and therefore `intent.feeQuoteHash` — is left alone.
-            g.quote_sig = sign(QUOTE_SIGNER_KEY, fee_quote_digest(&g.quote, CHAIN_ID, GATEWAY));
+            g.quote_sig = sign(
+                QUOTE_SIGNER_KEY,
+                fee_quote_digest(&g.quote, CHAIN_ID, GATEWAY),
+            );
             let h = harness(&g).await;
             let b = FakeSigner::ok();
 
@@ -6644,10 +6671,15 @@ mod tests {
             tx_hash: TX_HASH,
             block: BLOCK + 1,
         };
-        let row_id =
-            reconcile_sponsored_enrollment_executed(&h.store, &data_key_hex(), &profile(), &event, WALL_NOW)
-                .await
-                .expect("reconcile");
+        let row_id = reconcile_sponsored_enrollment_executed(
+            &h.store,
+            &data_key_hex(),
+            &profile(),
+            &event,
+            WALL_NOW,
+        )
+        .await
+        .expect("reconcile");
 
         assert_eq!(
             text(
@@ -6715,10 +6747,15 @@ mod tests {
             tx_hash: [0x77; 32],
             block: BLOCK + 1,
         };
-        let err =
-            reconcile_sponsored_enrollment_executed(&h.store, &data_key_hex(), &profile(), &event, WALL_NOW)
-                .await
-                .expect_err("foreign tx hash");
+        let err = reconcile_sponsored_enrollment_executed(
+            &h.store,
+            &data_key_hex(),
+            &profile(),
+            &event,
+            WALL_NOW,
+        )
+        .await
+        .expect_err("foreign tx hash");
         assert_eq!(err.code(), ERR_SUBMIT_RECONCILE_MISMATCH);
     }
 
@@ -6743,14 +6780,24 @@ mod tests {
             tx_hash: TX_HASH,
             block: BLOCK + 1,
         };
-        let a =
-            reconcile_sponsored_enrollment_executed(&h.store, &data_key_hex(), &profile(), &event, WALL_NOW)
-                .await
-                .expect("first");
-        let b2 =
-            reconcile_sponsored_enrollment_executed(&h.store, &data_key_hex(), &profile(), &event, WALL_NOW)
-                .await
-                .expect("replay");
+        let a = reconcile_sponsored_enrollment_executed(
+            &h.store,
+            &data_key_hex(),
+            &profile(),
+            &event,
+            WALL_NOW,
+        )
+        .await
+        .expect("first");
+        let b2 = reconcile_sponsored_enrollment_executed(
+            &h.store,
+            &data_key_hex(),
+            &profile(),
+            &event,
+            WALL_NOW,
+        )
+        .await
+        .expect("replay");
         assert_eq!(a, b2);
         let count = scalar_i64(
             &h.store,
@@ -6823,10 +6870,15 @@ mod tests {
             "the tamper really re-keyed the row"
         );
 
-        let err =
-            reconcile_sponsored_enrollment_executed(&h.store, &data_key_hex(), &profile(), &event, WALL_NOW)
-                .await
-                .expect_err("an attempt row that is not at its derived id must not reconcile");
+        let err = reconcile_sponsored_enrollment_executed(
+            &h.store,
+            &data_key_hex(),
+            &profile(),
+            &event,
+            WALL_NOW,
+        )
+        .await
+        .expect_err("an attempt row that is not at its derived id must not reconcile");
         assert!(
             matches!(err, SubmitError::ReconcileMismatch { field: "intent_id" }),
             "{err:?}"

@@ -338,6 +338,97 @@ jobs:
           exit 1
 
   # ---------------------------------------------------------------------------
+  # goat-proxy-tunnel: the residential-proxy tunnel crate, BOTH feature builds.
+  #
+  # `tools/goat-proxy-tunnel/Cargo.toml` declares its own `[workspace]`, exactly
+  # like `tools/goat-attestor`, so cargo cannot reach it by `--package` from the
+  # repository root. Hence `working-directory:` and bare commands.
+  #
+  # THE SUITE AND CLIPPY BOTH RUN TWICE, and that is not tidiness.
+  # `gateway` is a default-OFF feature: the node has no business holding the
+  # gateway's scheduling state. Four tests live behind it --- including
+  # `the_scheduler_refuses_a_second_concurrent_node`, which is the only thing
+  # asserting `MAX_CONCURRENT_NODES` --- and with a single `cargo test` they
+  # would never execute ANYWHERE. A test that exists and never runs is worse
+  # than no test: it reads as coverage in a review and provides none. Measured
+  # locally 2026-07-31: 129 tests default, 133 with the feature.
+  #
+  # Clippy runs twice for the same reason. `#[cfg(feature = "gateway")]` code is
+  # not linted by the default build at all, so a `-D warnings` gate that runs
+  # once gates half the crate.
+  goat-proxy-tunnel:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/goat-proxy-tunnel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/goat-proxy-tunnel
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy (node build)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: clippy (gateway build)
+        run: cargo clippy --all-targets --features gateway -- -D warnings
+      - name: test (node build)
+        run: cargo test
+      - name: test (gateway build)
+        run: cargo test --features gateway
+
+  # ---------------------------------------------------------------------------
+  # goat-proxy-worker: the residential-proxy sidecar crate.
+  #
+  # `tools/goat-proxy-worker/Cargo.toml` declares its own `[workspace]`, exactly
+  # like `tools/goat-attestor` and `tools/goat-proxy-tunnel`, so cargo cannot
+  # reach it by `--package` from the repository root. Hence `working-directory:`
+  # and bare commands.
+  #
+  # `--test-threads=1` IS LOAD-BEARING, and it is not caution.
+  # The kill switch's evidence is an OS socket census — `/proc/<pid>/net/tcp` on
+  # this runner — and that table is process-global. Two suites opening and
+  # closing loopback sockets on other threads while a census-based assertion
+  # runs turn "did the halt actually close them" into a coin flip, and the
+  # honest fix is to remove the concurrency rather than to widen the tolerance
+  # until the flake stops. The two census tests carry a named NOISE tolerance
+  # for a developer's default `cargo test`; single-threaded, that tolerance is
+  # unused.
+  #
+  # `iproute2` is not needed: the Linux census reads `/proc` directly. If the
+  # census ever cannot answer, it returns `Err` and the tests fail LOUDLY rather
+  # than passing vacuously over a permanently clean machine. That is deliberate.
+  #
+  # NOT PRESENT AND DELIBERATELY SO: the mutation-prover step. `mutate.sh` and
+  # `mutations/*.patch` land with the fail-closed integration suites, and a
+  # `run: bash mutate.sh ALL` added before those files exist is a job that fails
+  # on every push for a file that does not exist yet.
+  goat-proxy-worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/goat-proxy-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/goat-proxy-worker
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test (single-threaded; the socket census is process-global)
+        run: cargo test -- --test-threads=1
+
+  # ---------------------------------------------------------------------------
   # goat-attestor-anvil: the sixteen #[ignore]d live-Anvil hazard tests.
   #
   # NOT LIVE --- see the banner at the top of this file. Mirrors what
@@ -761,3 +852,59 @@ jobs:
         run: npm ci
       - name: test
         run: npm test
+
+      # ---- Tauri Rust shell -------------------------------------------------
+      # Until 2026-07-31 nothing in CI compiled `desktop/src-tauri` — `grep -c tauri`
+      # over this file was 0, so every Rust line behind the IPC bridge (wallet.rs,
+      # workbackend/fah.rs, ~7.8k lines) shipped unverified while the JS half was
+      # gated by vitest. `cargo check` is the cheap half of that gate; it type-checks
+      # and borrow-checks without linking, which is what catches the regressions a
+      # pure-JS job cannot see.
+      #
+      # Three prerequisites, each learned the hard way rather than assumed:
+      #   1. System libraries. tauri v2 links GTK/WebKit through pkg-config; without
+      #      these the build fails in the `webkit2gtk-sys` build script, not in our
+      #      code. libsoup-3.0 is required by webkit2gtk-4.1 specifically (the 4.0
+      #      package pulls libsoup-2.4 and the two cannot co-exist).
+      #   2. A built frontend. `tauri.conf.json` sets `frontendDist: "../dist"`, and
+      #      `tauri-build` validates that path at build-script time. `dist/` is
+      #      gitignored (`desktop/.gitignore:14`), so it must be produced here.
+      #      `npm run build` is enough — `beforeBuildCommand` also runs
+      #      `inject-relayer-csp.mjs`, which mutates a tracked config and is a
+      #      packaging concern, not a type-checking one. Do not add it.
+      #   3. NOT rc.exe. `tauri-winres` is Windows-only and never runs on this
+      #      runner; a local rc.exe failure says nothing about this job.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo (src-tauri)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            pkg-config
+      - name: Build frontend (produces ../dist for tauri-build)
+        run: npm run build
+      - name: cargo check (src-tauri)
+        working-directory: desktop/src-tauri
+        # --locked: desktop/src-tauri/Cargo.lock is committed, so a dependency
+        # resolving differently here than locally is a failure, not a silent update.
+        run: cargo check --locked --all-targets
+      # `cargo check` type-checks; it does not RUN anything. The bandwidth lane's
+      # consent gate, its cross-language preimage pin and its caps-survive-UI-kill
+      # proof are assertions, and an assertion nothing executes is a comment. This
+      # step is what makes `desktop/src-tauri/src/proxy/` and
+      # `desktop/src-tauri/tests/caps_survive_ui_kill.rs` load-bearing in CI.
+      - name: cargo clippy (src-tauri)
+        working-directory: desktop/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: cargo test (src-tauri)
+        working-directory: desktop/src-tauri
+        run: cargo test --locked

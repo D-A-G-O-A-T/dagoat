@@ -17,13 +17,12 @@ import {
   GOAT_USERNAME_PREFIX,
 } from "../identity.js";
 import { bindWalletFahProfile } from "../walletProfiles.js";
+import { canSubmitImport, showPasswordMismatch, MIN_PW } from "../walletFormRules.js";
 import { reducedVariants, stepVariants } from "../onboarding/stepMotion.js";
 import {
   KEY_REVEAL_CONFIRM, KEY_REVEAL_FALLBACK, KEY_REVEAL_TITLE, KEY_REVEAL_WARNING,
   PASSKEY_HELP, PASSKEY_LABEL, USERNAME_CAUTION,
 } from "../onboarding/copy.js";
-
-const MIN_PW = 8;
 
 /** view: "choose" | "create" | "import" | "reveal"
  *
@@ -210,13 +209,13 @@ function ImportView({ onClose }) {
   const { networkId } = useNetwork();
   const [name, setName] = useState("");
   const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
   const [key, setKey] = useState("");
   const [passkey, setPasskey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const canSubmit =
-    name.trim() && pw.length >= MIN_PW && key.trim() && isValidPasskeyInput(passkey) && !busy;
+  const canSubmit = canSubmitImport({ name, pw, pw2, key, passkey, busy });
 
   async function submit(e) {
     e.preventDefault();
@@ -266,6 +265,12 @@ function ImportView({ onClose }) {
       />
       <input
         type="password"
+        placeholder="Confirm password"
+        value={pw2}
+        onChange={(e) => setPw2(e.target.value)}
+      />
+      <input
+        type="password"
         placeholder="0x… private key"
         value={key}
         onChange={(e) => setKey(e.target.value)}
@@ -282,6 +287,7 @@ function ImportView({ onClose }) {
       {pw.length > 0 && pw.length < MIN_PW && (
         <p className="error-text">Password must be at least {MIN_PW} characters.</p>
       )}
+      {showPasswordMismatch(pw, pw2) && <p className="error-text">Passwords do not match.</p>}
       {!isValidPasskeyInput(passkey) && (
         <p className="error-text">Passkey must be empty or exactly 32 hex characters.</p>
       )}

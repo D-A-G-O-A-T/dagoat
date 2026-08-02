@@ -256,7 +256,10 @@ mod tests {
             CanonicalJsonError::NumberNotAllowed { .. }
         ));
         // The string form the spec actually mandates is accepted.
-        assert_eq!(canonical_str(&json!({ "decimals": "6" })), r#"{"decimals":"6"}"#);
+        assert_eq!(
+            canonical_str(&json!({ "decimals": "6" })),
+            r#"{"decimals":"6"}"#
+        );
     }
 
     /// Bools are not in the published 11-field schema.
@@ -291,7 +294,8 @@ mod tests {
             "unexpected: {err:?}"
         );
 
-        let err = canonical_bytes(&json!({ "outer": { "inner": { "n\u{00e9}": "x" } } })).unwrap_err();
+        let err =
+            canonical_bytes(&json!({ "outer": { "inner": { "n\u{00e9}": "x" } } })).unwrap_err();
         assert!(
             matches!(&err, CanonicalJsonError::NonPortableKey { path, .. }
                 if path == "$.outer.inner"),
@@ -381,6 +385,9 @@ mod tests {
         // constant is not merely self-consistent with our own tiny-keccak call.
         const EXPECTED_HASH: &str =
             "21695bf5b63f320da2e6907150f510b2782fb70b89a17b2949786707b18cc3b8";
-        assert_eq!(hex::encode(canonical_hash(&payload).unwrap()), EXPECTED_HASH);
+        assert_eq!(
+            hex::encode(canonical_hash(&payload).unwrap()),
+            EXPECTED_HASH
+        );
     }
 }

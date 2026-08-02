@@ -1,0 +1,151 @@
+[package]
+name = "goat-proxy-worker"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "GOAT residential proxy sidecar: a default-deny egress policy whose destination allowlist is decided on the resolved, pinned IP address."
+
+# Standalone package (not a member of the repo root workspace).
+#
+# R1 evidence, four reasons, recorded here so the placement is not re-litigated:
+#   1. `Dockerfile:18-19` copies only `Cargo.toml`/`Cargo.lock` and `src` into the
+#      image, so the deploy spine is the root package and nothing else.
+#   2. `.dockerignore:6-7` excludes `goatcoin-rs/` and `reference/` from the build
+#      context entirely.
+#   3. `ARCHITECTURE_CONVERGENCE.md` types the `goatcoin-rs/` modules ORACLE,
+#      "Never shipped" — a shipped sidecar cannot live in a tree that by
+#      construction is never shipped.
+#   4. `goatcoin-rs/crates/goat-backends` has no `[[bin]]` and carries no async
+#      dependency, so it cannot host a tokio sidecar either.
+# Hence: own manifest, own `[workspace]`, own CI job, own publication rows. The
+# `license` field above is what the attestor's licence audit requires of every
+# published manifest.
+#
+# There is deliberately NO **direct** dependency on the repository root package
+# here. This crate is a separate binary with a policy that is the INVERSE of the
+# existing `goat-worker`'s (see `src/lib.rs`), and a shared crate graph is how
+# two opposite policies end up sharing one code path.
+#
+# `goat-proxy-tunnel` is the one exception, and it is deliberate: `net.rs`
+# RE-EXPORTS `KILL_DEADLINE_MS` / `KILL_DEADLINE` from
+# `goat_proxy_tunnel::lifecycle` rather than declaring a second copy of the same
+# number. The kill deadline is a single value that two processes must agree on;
+# two declarations of it is the drift §4.1's naming table exists to prevent, and
+# a five-second deadline that is 5 000 in one crate and 5 in the other is not
+# caught by any test either crate can write alone. That pulls `goat-core` in
+# transitively (the tunnel wraps the frozen `SecureChannel` trait), which is the
+# root package's LIBRARY and not `src/bin/goat_worker.rs` — the denying worker is
+# a binary target and is not linked by anything here.
+#
+# The dependency direction is sidecar → tunnel and must stay that way: the
+# sidecar drives the carriage, so the adapter implementing `fetch::GatewayLink`
+# over a tunnel session belongs in THIS crate. An implementation placed in the
+# tunnel crate would need `goat-proxy-tunnel` → `goat-proxy-worker` and Cargo
+# would refuse the cycle.
+[workspace]
+
+[lib]
+name = "goat_proxy_worker"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Keccak-256, matching the digest family every chain-facing preimage in this
+# repository already uses. Its remaining caller is `consent::preimage_digest`:
+# the consent record is a chain-facing object and the desktop hashes its
+# preimage the same way.
+#
+# It is NO LONGER the allowlist digest's hash. That digest is now the
+# operator-facing SHA-256 one the desktop computes over the summary the operator
+# actually read; the Keccak operational-manifest digest that used to sit there
+# is retired. See `policy::operator_allowlist_preimage`.
+sha3 = "0.10"
+hex = "0.4"
+thiserror = "1"
+# `rt` (via rt-multi-thread) is load-bearing, not incidental: name resolution is
+# a blocking syscall and runs on `spawn_blocking`. A synchronous resolve called
+# from a tokio worker forces `Handle::block_on` inside a runtime context, which
+# panics. `sync` is the rate limiter's `tokio::sync::Mutex`, which is held
+# across awaits and therefore may not be a `std` mutex.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    # `net` is the outbound dial and nothing else. The socket registry opens
+    # `TcpStream`s to a pinned `SocketAddr`; there is no accept half anywhere in
+    # this crate's production source and a sweep asserts it.
+    "net",
+    "io-util",
+    # The control plane is the PARENT'S STDIN. There is no listening socket, no
+    # control port and no local console API, so `io-std` is what a `halt`
+    # command arrives on and `signal` is the second way one arrives.
+    "io-std",
+    "signal",
+    # `process` is the SUPERVISOR half: this crate both is the sidecar and
+    # carries the one code path that spawns it, so the desktop shell has exactly
+    # one spawn path to call rather than a second implementation of the
+    # cleared-environment rule.
+    "process",
+] }
+# `RobotsFetcher::fetch` performs HTTP and is therefore `async`. A synchronous
+# trait method that internally reached for `Handle::block_on` would PANIC: it is
+# invoked from `EgressPolicy::evaluate`, called from `fetch_with_redirects`,
+# running on a tokio worker.
+async-trait = "0.1"
+# Signature recovery for the consent gate, and nothing else. `alloy-primitives`
+# alone — not the `alloy` meta-crate — because the sidecar has no provider, no
+# signer and no path to key material (INV-19); it only ever RECOVERS an address
+# from a record somebody else signed.
+alloy-primitives = { version = "1", features = ["k256"] }
+# The kill deadline, imported rather than redeclared. See the manifest header.
+goat-proxy-tunnel = { path = "../goat-proxy-tunnel" }
+# HTTPS to the origin. `ring` is named explicitly because rustls 0.23 refuses to
+# pick a provider when zero or two are compiled in — the same reason the tunnel
+# crate names it.
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "tls12",
+    "logging",
+] }
+rustls-pki-types = "1"
+webpki-roots = "1"
+# SHA-256, in exactly two places, and neither of them signs anything. The
+# sidecar never signs; `sha2` here only ever hashes bytes somebody else is
+# accountable for, which is the opposite of holding a key (INV-19):
+#   1. `supervisor.rs` pins the sidecar binary a caller already trusted enough
+#      to have installed;
+#   2. `policy.rs` computes the OPERATOR-FACING allowlist digest — the desktop's
+#      construction, byte for byte, because the two must agree or the consent
+#      gate refuses every record the surface produces.
+sha2 = "0.10"
+# The ONE logging facade, called from `logging.rs` and from nowhere else — a
+# sweep over every production source asserts it. `tracing-subscriber` is
+# initialised on STDERR only, because STDOUT is the machine-readable event
+# stream the supervisor parses and two formats on one descriptor is how that
+# stream reads as permanently empty.
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "net",
+    "io-util",
+] }
+# Test-only: the operator's signing key exists in TESTS so that the consent gate
+# can be driven end to end. It is a dev-dependency precisely because production
+# code must have no way to sign anything (INV-19).
+k256 = { version = "0.13", features = ["ecdsa"] }
+rand_core = "0.6"

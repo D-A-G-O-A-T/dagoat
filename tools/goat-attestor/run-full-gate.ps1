@@ -287,8 +287,60 @@ $ExpectedIgnoredPassed   = 19       # exact: the live-Anvil hazard suite
 # only one it ever had was an accident (see STEP 1). A broken doctest reds the
 # step by failing to compile, and a new working one reds it by moving this count.
 $ExpectedDoctests        = 0
-$ExpectedForgeTests      = 248      # exact: `forge test` passed count
-$ExpectedNodeParityTests = 10       # exact: node --test passed count (step 5)
+# 2026-07-31, the allowlisted fetch network's settlement lane (spec Tasks 1-5, 8, 9).
+#   forge       248 -> 301  (+53, and every one is a NEW suite over NEW contracts under
+#                            contracts/src/proxy/ -- no existing suite changed count:
+#                            ProxyRevenueSettlement 20, ProxyRevenueSolvency 6 (the
+#                            invariant arm: 512 runs x 12800 calls, 0 reverts),
+#                            ProxyConsumerRegistry 6, ProxyRevenueNoBurn 7,
+#                            DeployProxyRevenue 8, ProxyRevenueMerkleParity 6.
+#                            This pin earned its keep on the way in: at 248 the step
+#                            still ran the suites and reported the ONE real failure
+#                            underneath -- DeployProxyRevenue.s.sol serialised
+#                            `takeBps` as a literal 900 while the contract's TAKE_BPS
+#                            is 1000, so the published artifact understated the take
+#                            by 100bps against the bytecode it names.)
+#   node          10 -> 18   (+8: ProxyFmtScope.test.mjs 5 -- the standing guard that
+#                            no unscoped `forge fmt` reaches the four contracts whose
+#                            runtime code hash is committed on chain; and
+#                            ProxyNoBurnSource.test.mjs 3 -- the source arm of the
+#                            three-layer no-burn assertion, alongside the runtime
+#                            selector scan and the ABI scan in forge.)
+# 2026-07-31, TASK 6 -- the proxy action types registered on GoatRelayGateway.
+#   forge       301 -> 305  (+4, all in the new contracts/test/GoatRelayGatewayProxy.t.sol:
+#                            test_setters_are_safe_only_and_bind_once,
+#                            test_gateway_reports_the_proxy_addresses_after_wiring,
+#                            test_proxy_action_type_constants_are_the_keccak_of_their_
+#                            canonical_strings, and
+#                            test_nonce_snapshot_recognises_the_three_proxy_action_types.
+#                            No existing suite changed COUNT: StreamGEip712Parity's
+#                            action-type test grew six assertions inside the test it
+#                            already had, and DeployStreamG's two digest pins moved
+#                            without the suite gaining or losing a test.)
+#   node          18 -> 18   (UNCHANGED, and asserted rather than assumed -- measured
+#                            18/18 after Task 6. Task 6 added NO new .test.mjs, so
+#                            $NodeParityTests below is unchanged too. What it did add
+#                            lives INSIDE StreamGManifest.test.mjs's existing tests:
+#                            EXPECTED_FEE_SCHEDULE_BYTES (derived from the encoder, not
+#                            counted by hand -- see the spec's Step 1 warning about three
+#                            mutually exclusive hand-computed byte counts), the three new
+#                            canonical rows, and the add-a-row/drop-a-row digest-movement
+#                            arms. `node --test` reports tests, not assertions, so the
+#                            pin correctly does not move.)
+# 2026-07-31, Task 7 -- the GATED revenue custodian (Option B of the funding path).
+#   forge       305 -> 315  (+10: ProxyRevenueTreasuryTest. The custodian owns an
+#                            UNMODIFIED BuyDesk and is inert until a one-way `arm()`
+#                            that defaults off. Three of the ten exist because building
+#                            it found the spec's version DEAD rather than gated:
+#                            BuyDesk's openSession/setBid/closeSession are `onlyOwner`
+#                            and the owner IS the treasury, which had no forwarders --
+#                            so no session could ever open and every `sell` would revert
+#                            `NoActiveSession`. The added forwarders are `onlySafe`, so
+#                            discretion stays with the Policy Safe and `BuyDesk.sol`
+#                            stays untouched. Measured 315 twice, once by the
+#                            implementer and once by the controller.)
+$ExpectedForgeTests      = 315      # exact: `forge test` passed count
+$ExpectedNodeParityTests = 18       # exact: node --test passed count (step 5)
 $Eip170Limit             = 24576    # bytes; EIP-170 deployed-code cap
 # STEPS 8 AND 9 HAVE NO PINS HERE, ON PURPOSE. Every floor and every required-set
 # literal those two checks use lives in the param() block of
@@ -313,6 +365,17 @@ $MigrationFreeze = [ordered]@{
     '0001_stream_g.sql'            = 'b4cc6a3dd60de02bf75d57f1528d13cf61b489f182b4b8dab788f8d82edf607b'
     '0002_stream_g_outbox.sql'     = 'd4f3ef94cb3c60f8972717c73cfa24aabea18fcffe6c2f87947083c9797a2bac'
     '0003_stream_g_scan_cursor.sql' = 'c9797c54380685434fe649bf083552ae49a9ff17dc6a51169f64b8420cc4668e'
+    # Added 2026-07-31 by Task 13 -- the allowlisted fetch network's receipt store.
+    # Five tables, all new: proxy_session_intents, proxy_receipts,
+    # proxy_meter_commitments, proxy_epoch_totals, proxy_epoch_batches. ADDITIVE only:
+    # it creates and never alters or drops, so 0001-0003 apply to an existing database
+    # exactly as before. Two UNIQUE indexes carry the replay defence --
+    # (session_id_hex, chunk_seq) and (operator_wallet, gateway_id_hex, counter) --
+    # and dropping either to a plain INDEX reds three tests, which was mutation-proved
+    # on the way in. Hash measured independently by the controller with Get-FileHash,
+    # matching the implementer's report; the crate's own MIGRATION_SHA256 in
+    # src/stream_g/store.rs carries the same value, so the two must move together.
+    '0004_proxy_receipts.sql'      = '0d5f3ec2ba0e39669714145eea5a99be0dad3408e7bb3803a0dd778590a94894'
 }
 
 # STEP 10 HAS NO PINS HERE EITHER, for the same reason steps 8 and 9 do not. The
@@ -441,9 +504,21 @@ function Write-Utf8NoBom {
 # directory: StreamGManifest.test.mjs resolves `deployments/31337.stream-g.json`
 # from cwd (its own comment says so), so running it from anywhere else would
 # quietly skip the artifact half of the check via its `existsSync` guard.
+#
+# The two proxy fixtures are listed for the same reason the other two are: nothing
+# else runs them. `.github/workflows/ci.yml` runs node only in the `desktop` job,
+# and both of these assert properties of contracts/ that no cargo or forge step
+# can see. ProxyNoBurnSource.test.mjs is the SOURCE arm of the three-layer no-burn
+# assertion -- the runtime-selector and ABI arms live in forge, and a burn function
+# added to a source file the ABI scan does not cover would pass both of them.
+# ProxyFmtScope.test.mjs guards the `forge fmt` scope rule, whose violation reds
+# step 10 by moving a committed runtime code hash; it is cheaper to catch the
+# unscoped invocation than to debug the canary five steps later.
 $NodeParityTests = @(
     'test/StreamGManifest.test.mjs',
-    'test/keccak256.test.mjs'
+    'test/keccak256.test.mjs',
+    'test/ProxyNoBurnSource.test.mjs',
+    'test/ProxyFmtScope.test.mjs'
 )
 
 # ---------------------------------------------------------------------------

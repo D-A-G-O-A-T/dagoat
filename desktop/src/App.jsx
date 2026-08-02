@@ -32,6 +32,8 @@ import Miner, {
 import Wallet from "./tabs/Wallet.jsx";
 import Market from "./tabs/Market.jsx";
 import Ops from "./tabs/Ops.jsx";
+import Bandwidth from "./tabs/Bandwidth.jsx";
+import { BANDWIDTH_TAB_LABEL } from "./proxy/copy.js";
 
 const FAH_BACKEND_ID = "folding_at_home"; // Season 0's only real work backend (module const, not per-render)
 
@@ -39,12 +41,13 @@ const FAH_BACKEND_ID = "folding_at_home"; // Season 0's only real work backend (
 // Tab id "miner" kept for stability.
 const TABS = [
   { id: "miner", label: "Contribute" },
+  { id: "bandwidth", label: BANDWIDTH_TAB_LABEL },
   { id: "wallet", label: "Wallet" },
   { id: "market", label: "Market" },
   { id: "ops", label: "Ops" },
 ];
 
-const PANELS = { miner: Miner, wallet: Wallet, market: Market, ops: Ops };
+const PANELS = { miner: Miner, bandwidth: Bandwidth, wallet: Wallet, market: Market, ops: Ops };
 
 export default function App() {
   return (
@@ -93,6 +96,7 @@ function AppShell({ onboardingFlags }) {
   const [mode, setModeState] = useState(MODE_PUBLIC_GOOD); // resolves async below
   const [wizardRequest, setWizardRequest] = useState(false);
   const [opsVisible, setOpsVisible] = useState(false);
+  const [bandwidthVisible, setBandwidthVisible] = useState(false);
 
   const { networkId } = useNetwork();
   const account = useActiveAccount();
@@ -205,6 +209,21 @@ function AppShell({ onboardingFlags }) {
     }
   }, [active, opsVisible]);
 
+  // Bandwidth tab: visible only when the background process for it is installed beside
+  // the app AND the pilot switch is set. The switch hides a tab and nothing else — the
+  // actual control is that ordinary builds ship no such process at all.
+  useEffect(() => {
+    let cancelled = false;
+    invoke("backend_proxy_available")
+      .then((ok) => { if (!cancelled) setBandwidthVisible(Boolean(ok)); })
+      .catch(() => { if (!cancelled) setBandwidthVisible(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (active === "bandwidth" && !bandwidthVisible) setActive("miner");
+  }, [active, bandwidthVisible]);
+
   const setMode = (next) => {
     setModeState(next);
     saveContributeModeV2(next);
@@ -250,7 +269,9 @@ function AppShell({ onboardingFlags }) {
     );
   }
 
-  const visibleTabs = TABS.filter((tab) => tab.id !== "ops" || opsVisible);
+  const visibleTabs = TABS.filter(
+    (tab) => (tab.id !== "ops" || opsVisible) && (tab.id !== "bandwidth" || bandwidthVisible),
+  );
 
   return (
     <ContributeModeContext.Provider value={modeValue}>

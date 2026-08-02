@@ -17,9 +17,7 @@ import {IEIP3009} from "../src/interfaces/IEIP3009.sol";
 /// would stay green. Same self-referential defect the Rust-side review caught
 /// as finding I4. These two must be cross-checked against each other.
 contract GatewayHashHarness is GoatRelayGateway {
-    constructor(address a, address b, address c, address d, address e, address f)
-        GoatRelayGateway(a, b, c, d, e, f)
-    {}
+    constructor(address a, address b, address c, address d, address e, address f) GoatRelayGateway(a, b, c, d, e, f) {}
 
     function exposedFeeQuoteStructHash(StreamGTypes.FeeQuote calldata q) external pure returns (bytes32) {
         return _feeQuoteStructHash(q);
@@ -51,15 +49,12 @@ contract StreamGEip712ParityTest is Test {
     uint256 constant CHAIN_ID = 31337;
     address constant VERIFY_GATEWAY = 0x3333333333333333333333333333333333333333;
 
-    bytes32 constant EIP712_DOMAIN_TYPEHASH = keccak256(
-        "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
-    );
+    bytes32 constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
     // Pinned from Solidity encoding of the fixture fields below (probe 2026-07-22).
-    bytes32 constant FEE_QUOTE_DIGEST =
-        0xb82a7f8564a67b0225bf729dfcd86961ff34b3a583c7ecd7c38d1011c3881469;
-    bytes32 constant FEE_QUOTE_TYPEHASH_PINNED =
-        0xeaeb044887c8cf8cd0fa7dcbfa981c25dd31ffebc55f4eca160b680c34ff4169;
+    bytes32 constant FEE_QUOTE_DIGEST = 0xb82a7f8564a67b0225bf729dfcd86961ff34b3a583c7ecd7c38d1011c3881469;
+    bytes32 constant FEE_QUOTE_TYPEHASH_PINNED = 0xeaeb044887c8cf8cd0fa7dcbfa981c25dd31ffebc55f4eca160b680c34ff4169;
     bytes32 constant ACTION_SPONSORED_ENROLLMENT_PINNED =
         0xbcd123c051cd9b628e040adc5b6509f0a172883d597875aa799b30bfe9a82807;
     bytes32 constant SPONSOR_ENROLLMENT_TYPEHASH_PINNED =
@@ -70,6 +65,17 @@ contract StreamGEip712ParityTest is Test {
         0xd13c2b44c281e3e64f71fefdd22c0981a18181362d0596732c5432c20c0c275b;
     bytes32 constant FEE_TOKEN_CONFIG_TYPEHASH_PINNED =
         0xdf3f4881a773320188104db0a63dab7043eb60cac6c8e7eea34993ccf6e77b36;
+
+    // Residential-proxy settlement action types (2026-07-31). Derived, not
+    // typed: `cast keccak "GOAT_STREAM_G_PROXY_CLAIM_V1"` and so on, then
+    // re-derived independently with contracts/test/keccak256.mjs. The Rust
+    // twin is `quotes.rs::tests::action_type_strings_pinned`, which pins the
+    // same three digests against `ActionType::digest()`.
+    bytes32 constant ACTION_PROXY_CLAIM_PINNED = 0x03791b0650b89c9f3b82a61b43fdd4129842b5036666c3e071af74325dc17ed9;
+    bytes32 constant ACTION_PROXY_PROPOSE_BATCH_PINNED =
+        0x5e1dabd4d4b0e517013f1c8e075dab1c1f6bc95ee81ff1afbfdf2b1907a73cb7;
+    bytes32 constant ACTION_PROXY_CHALLENGE_BATCH_PINNED =
+        0x274e67d1bddbe9e93b190fdf58c0e6ab56865c58974ce3b4bb37f5482f5d259f;
 
     function test_authorization_mode_ordinals_are_not_capability_bits() public pure {
         assertEq(uint8(StreamGTypes.AuthorizationMode.NONE), 0);
@@ -88,13 +94,17 @@ contract StreamGEip712ParityTest is Test {
 
     function test_action_type_constants_match_design() public pure {
         assertEq(StreamGTypes.ACTION_SPONSORED_ENROLLMENT, ACTION_SPONSORED_ENROLLMENT_PINNED);
-        assertEq(
-            StreamGTypes.ACTION_SPONSORED_ENROLLMENT,
-            keccak256("GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1")
-        );
+        assertEq(StreamGTypes.ACTION_SPONSORED_ENROLLMENT, keccak256("GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1"));
         assertEq(StreamGTypes.ACTION_SPONSORED_SELL, keccak256("GOAT_STREAM_G_SPONSORED_SELL_V1"));
         assertEq(StreamGTypes.ACTION_GOAT_TRANSFER, keccak256("GOAT_STREAM_G_GOAT_TRANSFER_V1"));
         assertEq(StreamGTypes.ACTION_USDT_TRANSFER, keccak256("GOAT_STREAM_G_USDT_TRANSFER_V1"));
+
+        assertEq(StreamGTypes.ACTION_PROXY_CLAIM, ACTION_PROXY_CLAIM_PINNED);
+        assertEq(StreamGTypes.ACTION_PROXY_CLAIM, keccak256("GOAT_STREAM_G_PROXY_CLAIM_V1"));
+        assertEq(StreamGTypes.ACTION_PROXY_PROPOSE_BATCH, ACTION_PROXY_PROPOSE_BATCH_PINNED);
+        assertEq(StreamGTypes.ACTION_PROXY_PROPOSE_BATCH, keccak256("GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1"));
+        assertEq(StreamGTypes.ACTION_PROXY_CHALLENGE_BATCH, ACTION_PROXY_CHALLENGE_BATCH_PINNED);
+        assertEq(StreamGTypes.ACTION_PROXY_CHALLENGE_BATCH, keccak256("GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1"));
     }
 
     function test_primary_typehashes_match_canonical_strings() public pure {
@@ -150,21 +160,11 @@ contract StreamGEip712ParityTest is Test {
         returns (bytes32)
     {
         return keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH,
-                keccak256(bytes(name)),
-                keccak256(bytes(version)),
-                chainId,
-                verifying
-            )
+            abi.encode(EIP712_DOMAIN_TYPEHASH, keccak256(bytes(name)), keccak256(bytes(version)), chainId, verifying)
         );
     }
 
-    function _feeQuoteDigest(StreamGTypes.FeeQuote memory q, address verifying)
-        internal
-        pure
-        returns (bytes32)
-    {
+    function _feeQuoteDigest(StreamGTypes.FeeQuote memory q, address verifying) internal pure returns (bytes32) {
         bytes32 domain = _domainSeparator("GoatRelayGateway", "1", CHAIN_ID, verifying);
         bytes32 structHash = keccak256(
             abi.encode(
@@ -228,12 +228,9 @@ contract StreamGEip712ParityTest is Test {
     uint256 constant RUST_CHAIN_ID = 31337;
     address constant RUST_VERIFYING_CONTRACT = 0x1010101010101010101010101010101010101010;
 
-    bytes32 constant RUST_PINNED_DOMAIN_SEPARATOR =
-        0x5c9e2040dd5b30c28be6d5a4742785cf7a77e870d7ef411104dfe3aecd0eca60;
-    bytes32 constant RUST_PINNED_STRUCT_HASH =
-        0x6cd18e6e3d505795b3c1f47735731eb67c0c8ce72a8dc1a4dcfd286580c2c9c4;
-    bytes32 constant RUST_PINNED_DIGEST =
-        0x0ddf83131e514d4868ed12dc965bffa737c12504e949ae525cb5b8964ce28d4f;
+    bytes32 constant RUST_PINNED_DOMAIN_SEPARATOR = 0x5c9e2040dd5b30c28be6d5a4742785cf7a77e870d7ef411104dfe3aecd0eca60;
+    bytes32 constant RUST_PINNED_STRUCT_HASH = 0x6cd18e6e3d505795b3c1f47735731eb67c0c8ce72a8dc1a4dcfd286580c2c9c4;
+    bytes32 constant RUST_PINNED_DIGEST = 0x0ddf83131e514d4868ed12dc965bffa737c12504e949ae525cb5b8964ce28d4f;
 
     /// The exact `FeeQuote` the Rust regression test hashes.
     function _rustParityFeeQuote() internal pure returns (StreamGTypes.FeeQuote memory q) {
@@ -371,26 +368,16 @@ contract StreamGEip712ParityTest is Test {
         // separator applies without any new pin.
         bytes32 domain = gw.DOMAIN_SEPARATOR();
         assertEq(
-            domain,
-            RUST_PINNED_DOMAIN_SEPARATOR,
-            "domain separator diverged (should be identical to FeeQuote's domain)"
+            domain, RUST_PINNED_DOMAIN_SEPARATOR, "domain separator diverged (should be identical to FeeQuote's domain)"
         );
 
         bytes32 digest = gw.exposedHashTypedDataV4(structHash);
-        assertEq(
-            digest,
-            RUST_SPONSOR_ENROLLMENT_DIGEST,
-            "SponsorEnrollment digest diverged from the Rust attestor pin"
-        );
+        assertEq(digest, RUST_SPONSOR_ENROLLMENT_DIGEST, "SponsorEnrollment digest diverged from the Rust attestor pin");
     }
 
     /// Same as `_feeQuoteDigest` but chain-id explicit, so the parity fixture
     /// is not tied to the older `CHAIN_ID` constant.
-    function _feeQuoteDigestAt(StreamGTypes.FeeQuote memory q, address verifying)
-        internal
-        view
-        returns (bytes32)
-    {
+    function _feeQuoteDigestAt(StreamGTypes.FeeQuote memory q, address verifying) internal view returns (bytes32) {
         bytes32 domain = _domainSeparator("GoatRelayGateway", "1", block.chainid, verifying);
         bytes32 structHash = keccak256(
             abi.encode(
@@ -421,11 +408,12 @@ contract StreamGEip712ParityTest is Test {
         assertEq(IEnrollmentRegistryV1.nonces.selector, bytes4(keccak256("nonces(address)")));
         assertEq(
             IEIP3009.receiveWithAuthorization.selector,
-            bytes4(keccak256("receiveWithAuthorization(address,address,uint256,uint256,uint256,bytes32,uint8,bytes32,bytes32)"))
+            bytes4(
+                keccak256(
+                    "receiveWithAuthorization(address,address,uint256,uint256,uint256,bytes32,uint8,bytes32,bytes32)"
+                )
+            )
         );
-        assertEq(
-            IEIP3009.authorizationState.selector,
-            bytes4(keccak256("authorizationState(address,bytes32)"))
-        );
+        assertEq(IEIP3009.authorizationState.selector, bytes4(keccak256("authorizationState(address,bytes32)")));
     }
 }

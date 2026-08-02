@@ -155,11 +155,54 @@ param(
     # SHA-256(artifact.rawMetadata), lowercase hex. THE LITERAL IS THE TEST: do
     # not replace a row with an expression derived from the artifact, which is the
     # assertion-that-cannot-fail shape this repository has recorded nine times.
+    #
+    # ALL FOUR ROWS RE-PINNED 2026-07-31 -- "Option A", authorised by the founder on
+    # that date. Task 6 registered three residential-proxy action types, which
+    # required editing src/StreamGTypes.sol. That file appears in the solc metadata
+    # 'sources' map of ALL FOUR of these contracts, so all four CBOR metadata
+    # trailers moved. Only the GATEWAY changed BEHAVIOURALLY (see its row below);
+    # the other three moved THROUGH METADATA ALONE.
+    #
+    # HOW THAT WAS VERIFIED, rather than asserted. The source of FeeTokenRegistry,
+    # SponsoredBuyDesk and WalletSponsorshipRegistry is BYTE-IDENTICAL to HEAD:
+    # 'git diff --stat HEAD --' over those three .sol files prints nothing. It was
+    # then isolated in three arms -- reverting ONLY StreamGTypes.sol returns all
+    # three to their previous hashes, and HEAD's StreamGTypes.sol plus one added
+    # line moves them again. So the mover is the shared types file, not these three.
+    #
+    # NO LIVE RE-PUBLICATION IS OWED, which is why a bump is permitted at all here.
+    # Stream G is ANVIL-ONLY: deployments/ holds 31337.stream-g.json and
+    # 31337.stream-g.payload.json and there is NO contracts/deployments/
+    # 84532.stream-g.json, so no Base Sepolia deployment commits these code hashes
+    # and nothing live goes stale. The deployment payload is regenerated in the same
+    # change (gate step 4 writes it, step 5 checks it), which is the "same commit"
+    # condition the header above requires.
+    #
+    # THE PREVIOUS FOUR VALUES, recorded so the move is auditable:
+    #   FEE_TOKEN_REGISTRY          f9ddeded5cdcff6eca8957a000d37b2106c8f58d7d7716166d2108ca384c3a16
+    #   GATEWAY                     1e483725795f6ddaee7012b6fb50ca5faec95e037638f65032d7abf5bb657be8
+    #   SPONSORED_BUY_DESK          8be0e57d28f6adb7ecc4c2880376caa23d4972571ad7e9ef7aead8694d341ef4
+    #   WALLET_SPONSORSHIP_REGISTRY 4bf6d9b4625b3396d49ffe845e35db05e8758cf9bc0567ac2f2c3c66daf1e73a
     [System.Collections.Specialized.OrderedDictionary] $RoleMetadataFreeze = ([ordered]@{
-        'FEE_TOKEN_REGISTRY'          = 'f9ddeded5cdcff6eca8957a000d37b2106c8f58d7d7716166d2108ca384c3a16'
-        'GATEWAY'                     = '1e483725795f6ddaee7012b6fb50ca5faec95e037638f65032d7abf5bb657be8'
-        'SPONSORED_BUY_DESK'          = '8be0e57d28f6adb7ecc4c2880376caa23d4972571ad7e9ef7aead8694d341ef4'
-        'WALLET_SPONSORSHIP_REGISTRY' = '4bf6d9b4625b3396d49ffe845e35db05e8758cf9bc0567ac2f2c3c66daf1e73a'
+        'FEE_TOKEN_REGISTRY'          = 'dccc5eef524248f0daa62b8bd14800ea9f3b12133db89a73f2dd18a7e6777d00'
+        # BUMPED 2026-07-31 by Task 6, which registered the three residential-proxy
+        # action types (ACTION_PROXY_CLAIM / _PROPOSE_BATCH / _CHALLENGE_BATCH) on
+        # this gateway: two one-shot setters, two public address slots, two events,
+        # and three new arms in '_isKnownAction'. Deployed size 12,944 -> 13,530
+        # bytes, still 11,046 under the EIP-170 cap.
+        #
+        # WHY A BUMP IS PERMITTED HERE AT ALL, and by whom: the founder's consultant
+        # authorised it on 2026-07-31 on the ground that Stream G is ANVIL-ONLY --
+        # deployments/ holds 31337.stream-g.json and 31337.stream-g.payload.json and
+        # there is NO 84532.stream-g.json, so no Base Sepolia deployment commits this
+        # code hash and nothing live goes stale. The deployment payload is
+        # regenerated in the same change (gate step 4 writes it, step 5 checks it),
+        # which is the "same commit" condition the header above requires.
+        #
+        # The previous value was 1e483725795f6ddaee7012b6fb50ca5faec95e037638f65032d7abf5bb657be8.
+        'GATEWAY'                     = '68f4d2f01df7affee9d787eeae3a152e9f4ae2dd319973d29c4eb7cd3dfdb070'
+        'SPONSORED_BUY_DESK'          = 'ee3b81727531486ce0a7ee1ecf3007ff604f22b7da947f708fb8ca618b69c629'
+        'WALLET_SPONSORSHIP_REGISTRY' = '44811550563ca677ad83e993f6b29fcfabc474cbcda7317e18e07893b8825057'
     }),
 
     # Role -> the artifact that implements it. SEPARATE from the freeze table on

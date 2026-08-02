@@ -475,8 +475,7 @@ fn licence_declaration(text: &str) -> LicenceDecl {
         .iter()
         .filter(|k| {
             k.key == "license"
-                && (k.table == "package"
-                    || (k.table == "workspace.package" && !has_package_table))
+                && (k.table == "package" || (k.table == "workspace.package" && !has_package_table))
         })
         .collect();
     let direct = direct_keys
@@ -593,11 +592,28 @@ mod tests {
     ///   workspace, the shape most likely to be forgotten.
     /// * `tools/goat-attestor/Cargo.toml` -- this crate; if the audit cannot
     ///   see its own manifest, its scope is wrong.
+    /// * `tools/goat-proxy-tunnel/Cargo.toml` -- a standalone package under
+    ///   `tools/` that declares its OWN `[workspace]`, so it resolves to itself
+    ///   and inherits nothing. It is the second crate published from `tools/`
+    ///   and the first one added after this list was written, which is exactly
+    ///   the case a scope guard exists for: a new crate whose rows land in the
+    ///   baseline while nothing asserts the audit reached them.
     const REQUIRED_MANIFEST_COVERAGE: &[&str] = &[
         "Cargo.toml",
         "goatcoin-rs/Cargo.toml",
         "desktop/src-tauri/Cargo.toml",
         "tools/goat-attestor/Cargo.toml",
+        "tools/goat-proxy-tunnel/Cargo.toml",
+        // The second standalone crate under `tools/`, published with its
+        // nineteen baseline rows. Its manifest declares its own `[workspace]`
+        // and therefore inherits nothing, so it must state the dual licence
+        // directly — the arm-1 case, and the one a new crate gets wrong.
+        //
+        // **This entry and that crate's baseline row are one atomic change.**
+        // The audit reads manifests FROM the baseline, so naming a manifest
+        // here that the baseline does not carry turns the audit red rather than
+        // widening it.
+        "tools/goat-proxy-worker/Cargo.toml",
     ];
 
     /// The five manifests that reach the dual licence only by INHERITING it.

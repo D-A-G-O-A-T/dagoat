@@ -1500,7 +1500,7 @@ mod tests {
                 "deskOwner": "0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496",
                 "quoteSigner": "0xeBD5a85005dCC98dabB7a2888De82D43c5A6957E",
                 "deploymentManifestHash": "0xc1326e2474495792874c6baba322d9562e530c0c2a8defe037ff432c890aba65",
-                "feeScheduleHash": "0x1c663d43fccc550dd95ef9dcd469eb12ac98006d355fea4ce9fcdc002ff8d952"
+                "feeScheduleHash": "0x2681f70d84c3a644290b622f42fc1fa6977c66da4343213f9967c8204ad91bf2"
             }}"#
         )
     }
@@ -1619,7 +1619,7 @@ mod tests {
                 "deskOwner": "0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496",
                 "quoteSigner": "0xeBD5a85005dCC98dabB7a2888De82D43c5A6957E",
                 "deploymentManifestHash": "0xc1326e2474495792874c6baba322d9562e530c0c2a8defe037ff432c890aba65",
-                "feeScheduleHash": "0x1c663d43fccc550dd95ef9dcd469eb12ac98006d355fea4ce9fcdc002ff8d952"
+                "feeScheduleHash": "0x2681f70d84c3a644290b622f42fc1fa6977c66da4343213f9967c8204ad91bf2"
             }}"#
         )
     }
@@ -1646,7 +1646,7 @@ mod tests {
             "deskOwner": "0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496",
             "quoteSigner": "0xeBD5a85005dCC98dabB7a2888De82D43c5A6957E",
             "deploymentManifestHash": "0xc1326e2474495792874c6baba322d9562e530c0c2a8defe037ff432c890aba65",
-            "feeScheduleHash": "0x1c663d43fccc550dd95ef9dcd469eb12ac98006d355fea4ce9fcdc002ff8d952"
+            "feeScheduleHash": "0x2681f70d84c3a644290b622f42fc1fa6977c66da4343213f9967c8204ad91bf2"
         }"#;
         fs::write(&path, json).unwrap();
 

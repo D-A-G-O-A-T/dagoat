@@ -891,15 +891,14 @@ pub async fn reconcile_executed_log(
                 tx_hash: log.tx_hash,
                 block: log.block_number,
             };
-            let event_row_id =
-                reconcile_executed_for_profile_id(
-                    store,
-                    data_key_hex,
-                    &winner.profile_id,
-                    &event,
-                    now_wall,
-                )
-                .await?;
+            let event_row_id = reconcile_executed_for_profile_id(
+                store,
+                data_key_hex,
+                &winner.profile_id,
+                &event,
+                now_wall,
+            )
+            .await?;
             Ok(LogOutcome::Confirmed {
                 attempt_id: winner.attempt_id.clone(),
                 profile_id: winner.profile_id.clone(),
@@ -1616,8 +1615,10 @@ pub async fn load_scan_cursor(
             Box::pin(async move {
                 let v: Option<i64> = h
                     .fetch_optional(
-                        sqlx::query("SELECT last_scanned_block FROM stream_g_scan_cursors \
-                                     WHERE name = ?")
+                        sqlx::query(
+                            "SELECT last_scanned_block FROM stream_g_scan_cursors \
+                                     WHERE name = ?",
+                        )
                         .bind(name),
                     )
                     .await?
@@ -2204,9 +2205,10 @@ mod tests {
             block: LOG_BLOCK,
         };
 
-        let err = reconcile_executed_for_profile_id(&store, &data_key_hex(), PROFILE_A, &event, WALL_NOW)
-            .await
-            .expect_err("a row that names no transaction must not be confirmable");
+        let err =
+            reconcile_executed_for_profile_id(&store, &data_key_hex(), PROFILE_A, &event, WALL_NOW)
+                .await
+                .expect_err("a row that names no transaction must not be confirmable");
         assert_eq!(err.code(), "SUBMIT_RECONCILE_UNVERIFIABLE", "got {err}");
 
         assert_eq!(
@@ -2274,10 +2276,16 @@ mod tests {
         let policy = FinalityPolicy::for_chain(CHAIN_ID);
         let log = log_for(raw_hash, CONTROLLER_A);
 
-        let outcome =
-            reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &log, WALL_NOW)
-                .await
-                .expect("first reconcile");
+        let outcome = reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &log,
+            WALL_NOW,
+        )
+        .await
+        .expect("first reconcile");
         assert!(
             matches!(outcome, LogOutcome::Confirmed { .. }),
             "expected Confirmed, got {outcome:?}"
@@ -2299,10 +2307,16 @@ mod tests {
 
         let mut removed = log.clone();
         removed.removed = true;
-        let outcome =
-            reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &removed, WALL_NOW)
-                .await
-                .expect("reorg reconcile");
+        let outcome = reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &removed,
+            WALL_NOW,
+        )
+        .await
+        .expect("reorg reconcile");
         match outcome {
             LogOutcome::Reorged { rolled_back, .. } => {
                 assert_eq!(rolled_back, vec![attempt_id.clone()]);
@@ -2381,9 +2395,16 @@ mod tests {
         let log = log_for(raw_hash, CONTROLLER_A);
         let profile = AuthenticatedProfileId::for_test(PROFILE_A);
 
-        reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &log, WALL_NOW)
-            .await
-            .expect("first reconcile");
+        reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &log,
+            WALL_NOW,
+        )
+        .await
+        .expect("first reconcile");
 
         let view = crate::stream_g::submit::get_enrollment_intent(&store, &profile, INTENT_ID)
             .await
@@ -2521,9 +2542,16 @@ mod tests {
         let log = log_for(raw_hash, CONTROLLER_A);
 
         chain.set_receipt(Ok(None));
-        let err = reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &log, WALL_NOW)
-            .await
-            .expect_err("no receipt means no confirmation");
+        let err = reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &log,
+            WALL_NOW,
+        )
+        .await
+        .expect_err("no receipt means no confirmation");
         assert_eq!(err.code(), ERR_RECONCILE_UNCORROBORATED_LOG, "got {err}");
         assert_eq!(
             err.scope(),
@@ -2552,9 +2580,16 @@ mod tests {
             success: false,
             gas_used: 21_000,
         })));
-        let err = reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &log, WALL_NOW)
-            .await
-            .expect_err("a status-0 receipt cannot back a success log");
+        let err = reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &log,
+            WALL_NOW,
+        )
+        .await
+        .expect_err("a status-0 receipt cannot back a success log");
         assert_eq!(err.code(), ERR_RECONCILE_UNVERIFIED_LOG, "got {err}");
         assert_eq!(
             err.scope(),
@@ -2572,9 +2607,16 @@ mod tests {
             success: true,
             gas_used: 21_000,
         })));
-        let err = reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &log, WALL_NOW)
-            .await
-            .expect_err("block number mismatch");
+        let err = reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &log,
+            WALL_NOW,
+        )
+        .await
+        .expect_err("block number mismatch");
         assert_eq!(err.code(), ERR_RECONCILE_UNCORROBORATED_LOG, "got {err}");
         assert_eq!(err.scope(), ReconcileErrorScope::LogTransient);
 
@@ -2587,9 +2629,16 @@ mod tests {
             success: true,
             gas_used: 21_000,
         })));
-        let err = reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &log, WALL_NOW)
-            .await
-            .expect_err("block hash mismatch");
+        let err = reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &log,
+            WALL_NOW,
+        )
+        .await
+        .expect_err("block hash mismatch");
         assert_eq!(err.code(), ERR_RECONCILE_UNCORROBORATED_LOG, "got {err}");
         assert_eq!(err.scope(), ReconcileErrorScope::LogTransient);
 
@@ -2605,9 +2654,16 @@ mod tests {
             success: false,
             gas_used: 21_000,
         })));
-        let err = reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &log, WALL_NOW)
-            .await
-            .expect_err("a status-0 receipt in a block the log does not claim");
+        let err = reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &log,
+            WALL_NOW,
+        )
+        .await
+        .expect_err("a status-0 receipt in a block the log does not claim");
         assert_eq!(
             err.scope(),
             ReconcileErrorScope::LogTransient,
@@ -2622,10 +2678,16 @@ mod tests {
             success: true,
             gas_used: 21_000,
         })));
-        let outcome =
-            reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &log, WALL_NOW)
-                .await
-                .expect("a corroborated log must reconcile");
+        let outcome = reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &log,
+            WALL_NOW,
+        )
+        .await
+        .expect("a corroborated log must reconcile");
         assert!(
             matches!(outcome, LogOutcome::Confirmed { .. }),
             "{outcome:?}"
@@ -2787,10 +2849,16 @@ mod tests {
         let policy = FinalityPolicy::for_chain(8453);
         let log = log_for(raw_hash, CONTROLLER_A);
 
-        let outcome =
-            reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &log, WALL_NOW)
-                .await
-                .expect("not final is not an error");
+        let outcome = reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &log,
+            WALL_NOW,
+        )
+        .await
+        .expect("not final is not an error");
         match outcome {
             LogOutcome::NotFinalYet {
                 depth, required, ..
@@ -2816,10 +2884,16 @@ mod tests {
 
         // Paired non-zero arm: the very same log, deep enough, does write.
         chain.set_head(Ok(LOG_BLOCK + DEFAULT_CONFIRMATIONS));
-        let outcome =
-            reconcile_executed_log(&store, &data_key_hex(), (&chain).into(), policy, &log, WALL_NOW)
-                .await
-                .expect("deep enough");
+        let outcome = reconcile_executed_log(
+            &store,
+            &data_key_hex(),
+            (&chain).into(),
+            policy,
+            &log,
+            WALL_NOW,
+        )
+        .await
+        .expect("deep enough");
         assert!(
             matches!(outcome, LogOutcome::Confirmed { .. }),
             "{outcome:?}"

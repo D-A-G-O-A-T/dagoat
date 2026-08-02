@@ -89,6 +89,11 @@ const WS_CONNECT_WAIT_STEP: Duration = Duration::from_millis(200);
 /// After WS is up, wait for a state-tree snapshot before resource config / fold.
 const WS_TREE_WAIT_TOTAL: Duration = Duration::from_secs(8);
 const WS_TREE_WAIT_STEP: Duration = Duration::from_millis(200);
+/// …and then for the GPU list specifically, which a fresh client fetches remotely *after*
+/// publishing `info` (measured: ~2 s, and only on the first run — later runs load `gpus.json`
+/// from disk in ~1 ms). Budget is generous because the cost of overshooting is a slightly later
+/// Start, while the cost of undershooting is a CPU-only session.
+const WS_GPU_WAIT_TOTAL: Duration = Duration::from_secs(12);
 /// Minimum FAH client version we treat as current for upgrade prompting (semver-ish major.minor.patch).
 const FAH_MIN_GOOD_VERSION: &str = "8.5.6";
 /// Download timeout for the portable FAH engine (~3.5 MB typically).
@@ -522,11 +527,18 @@ impl FahBackend {
         }
 
         let linked = is_account_linked(tree);
-        let unlink_attempted = self.guard.lock().expect("guard mutex poisoned").unlink_attempted;
+        let unlink_attempted = self
+            .guard
+            .lock()
+            .expect("guard mutex poisoned")
+            .unlink_attempted;
         match decide_guard_action(n, linked, unlink_attempted) {
             GuardAction::Repush => {}
             GuardAction::AttemptUnlink => {
-                self.guard.lock().expect("guard mutex poisoned").unlink_attempted = true;
+                self.guard
+                    .lock()
+                    .expect("guard mutex poisoned")
+                    .unlink_attempted = true;
                 let outcome = self.unlink_managed_account().await;
                 // FIX-3: a concurrent poll is already handling the unlink — do nothing here (don't
                 // pause, don't re-push into a client that's mid-restart); let the owner finish and
@@ -657,6 +669,38 @@ impl FahBackend {
             tokio::time::sleep(WS_CONNECT_WAIT_STEP).await;
         }
         self.live.lock().map(|l| l.connected).unwrap_or(false)
+    }
+
+    /// Wait until the FAH state tree carries a **GPU list** (`info.gpus` / top-level `gpus`),
+    /// as opposed to merely a first snapshot.
+    ///
+    /// `wait_until_tree_ready` is satisfied by `info` alone, and on a *fresh* client that is far
+    /// too early: `info` is published at startup, but the GPU list needs a remote `GET /gpus`
+    /// round-trip. Measured on the founder's first run (client log 2026-07-30T06:44:10Z):
+    /// `No previous gpus.json` -> `GET /gpus` at :10 -> `gpus = {…}` at **:12**, while Goat's
+    /// WebSocket connected at :11. The resource config was therefore built from a tree with no
+    /// GPUs, which now means an explicit "enable these zero GPUs".
+    ///
+    /// Waits for the KEY to exist, not for it to be non-empty — a genuinely GPU-less host
+    /// publishes `gpus: {}` and must not be made to sit out the whole budget. Returns false on
+    /// timeout and the caller proceeds anyway: a slow probe must never block Start.
+    async fn wait_until_gpus_known(&self, total: Duration) -> bool {
+        let has_gpu_key = |tree: &Value| {
+            tree.get("info").and_then(|i| i.get("gpus")).is_some() || tree.get("gpus").is_some()
+        };
+        let deadline = Instant::now() + total;
+        while Instant::now() < deadline {
+            if let Ok(live) = self.live.lock() {
+                if has_gpu_key(&live.tree) {
+                    return true;
+                }
+            }
+            tokio::time::sleep(WS_TREE_WAIT_STEP).await;
+        }
+        self.live
+            .lock()
+            .map(|l| has_gpu_key(&l.tree))
+            .unwrap_or(false)
     }
 
     /// Wait until the FAH state tree has `info` or `gpus` (first snapshot).
@@ -841,7 +885,9 @@ fn open_db_after_stop(db_path: &Path, timeout: Duration) -> Result<Connection, S
             Ok(conn) => return Ok(conn),
             Err(err) => {
                 if Instant::now() >= deadline {
-                    return Err(format!("client.db still locked/unreachable after stop: {err}"));
+                    return Err(format!(
+                        "client.db still locked/unreachable after stop: {err}"
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(150));
             }
@@ -1226,6 +1272,10 @@ impl WorkBackend for FahBackend {
         }
         // Wait for first WS snapshot so GPU list / account-link flags are known.
         let _ = self.wait_until_tree_ready(WS_TREE_WAIT_TOTAL).await;
+        // …then specifically for the GPU list. A fresh client publishes `info` seconds before it
+        // finishes fetching `gpus` (see wait_until_gpus_known), and a resource config built in
+        // that window enables no GPUs at all.
+        let _ = self.wait_until_gpus_known(WS_GPU_WAIT_TOTAL).await;
 
         // Note outdated clients honestly — do NOT launch the NSIS latest.exe here (EULA blocks
         // Start contributing). Managed path uses portable latest.tar.bz2 on next ensure when no
@@ -1440,11 +1490,11 @@ impl WorkBackend for FahBackend {
     }
 
     async fn set_power(&self, level: PowerLevel) -> Result<(), String> {
-        let available = {
+        let (available, tree) = {
             let live = self.live.lock().expect("live mutex poisoned");
-            available_cores_from_tree(&live.tree)
+            (available_cores_from_tree(&live.tree), live.tree.clone())
         };
-        self.enqueue_command(vec![power_config_message(level, available)])
+        self.enqueue_command(vec![power_config_message(&tree, level, available)])
     }
 
     fn configure(&self, key: &str, value: &str) -> Result<(), String> {
@@ -2661,74 +2711,121 @@ fn host_parallelism() -> usize {
 
 /// Enable all supported GPUs + set the CPU budget + leave idle-only off. `cpus` is supplied by the
 /// caller (the auto-pilot Start passes `auto_cpus(host_parallelism())`) so this builder stays a
-/// pure, fixture-testable function. Official wire form: `{"cmd":"config","config":{…},"time":…}`.
+/// pure, fixture-testable function.
+///
+/// Wire form (VERIFIED against a live fah-client **8.5.6** on 2026-07-30, not inferred):
+/// ```text
+/// {"cmd":"config","config":{"groups":{"<group>":{gpus,cpus,paused,on_idle,cuda,hip}}},"time":…}
+/// ```
+/// The resource keys MUST be nested under `config.groups.<name>`. v8.5's **top-level** `config`
+/// object accepts only the account/identity keys (`user`, `team`, `passkey`, `cause`); a
+/// top-level `{"gpus":…,"cpus":…}` patch is **silently discarded** — no error frame, nothing in
+/// `log.txt`. That is exactly how this shipped broken: the identity patch (same command, same
+/// socket) applied every time, so the socket looked healthy while every GPU stayed off and only
+/// the CPU folded. Measured on the founder's box: 3 supported GPUs (RTX 5090 / RTX 4090 /
+/// gfx1036) detected in `info.gpus`, `groups[""].config.gpus` stuck at `{}`, and the client's
+/// own `client.db` config row holding identity keys *only*. Re-sending the identical GPU map
+/// inside the `groups` envelope applied it and the client assigned a GPU work unit within
+/// seconds. Probe transcripts: the "FAH GPUs never start — Start contributing folds CPU-only"
+/// spec, §2.
+///
+/// One patch covers every resource group in the tree (`groups` is an object keyed by group name;
+/// the default group's name is the **empty string**, which is a real key, not a missing one).
 fn enable_gpus_and_cpus_config(tree: &Value, cpus: u64) -> String {
-    let mut gpus_cfg = serde_json::Map::new();
+    let mut resources = serde_json::Map::new();
+    resources.insert("cpus".to_string(), json!(cpus.max(1)));
+    resources.insert("paused".to_string(), json!(false));
+    resources.insert("on_idle".to_string(), json!(false));
+    resources.insert("cuda".to_string(), json!(true));
+    resources.insert("hip".to_string(), json!(true));
 
-    // Detected GPUs: info.gpus (object keyed like "gpu:01:00:00") or top-level gpus.
+    // The enable set is rebuilt from what the client detects RIGHT NOW, on every Start — the
+    // founder's hardware can change between sessions. `gpus` is REPLACE, not merge (measured:
+    // sending a map naming one GPU left exactly that one in `groups.<g>.config.gpus`), so a
+    // card that is gone, or that FAH now reports `supported:false`, drops out simply by not
+    // being named. Nothing is carried over from the client's stored config: doing so would
+    // resurrect dead ids and re-enable GPUs FAH has said it cannot use, and the config would
+    // never converge back to reality.
+    //
+    // When the list is ABSENT the `gpus` key is omitted entirely rather than sent empty —
+    // under replace semantics an empty map would WIPE the user's GPU config off a snapshot
+    // that simply had not loaded yet. `wait_until_gpus_known` makes that path rare; this makes
+    // it harmless.
+    if let Some(gpus_cfg) = detected_supported_gpus(tree) {
+        resources.insert("gpus".to_string(), Value::Object(gpus_cfg));
+    }
+
+    group_resource_config(tree, &Value::Object(resources))
+}
+
+/// The GPUs the client currently detects AND reports as supported, as a ready `{id: {enabled}}`
+/// config map. `None` means the client has published no GPU list at all — which is *not* the same
+/// as "this host has no GPUs" (that is `Some(empty)`), and the two must not be conflated: the
+/// first has to leave existing config alone, the second legitimately clears it.
+///
+/// Handles both shapes seen in the wild: `info.gpus` as an object keyed `"gpu:01:00:00"` (what a
+/// live 8.5.6 sends) and a top-level `gpus` array of objects carrying their own `id`.
+fn detected_supported_gpus(tree: &Value) -> Option<serde_json::Map<String, Value>> {
     let detected = tree
         .get("info")
         .and_then(|i| i.get("gpus"))
-        .or_else(|| tree.get("gpus"));
+        .or_else(|| tree.get("gpus"))?;
 
-    if let Some(Value::Object(map)) = detected {
-        for (id, gpu) in map {
-            let supported = gpu
-                .get("supported")
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-            if supported {
-                gpus_cfg.insert(id.clone(), json!({ "enabled": true }));
-            }
-        }
-    } else if let Some(Value::Array(arr)) = detected {
-        for (i, gpu) in arr.iter().enumerate() {
-            let id = gpu
-                .get("id")
-                .and_then(Value::as_str)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("gpu:{i}"));
-            let supported = gpu
-                .get("supported")
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-            if supported {
-                gpus_cfg.insert(id, json!({ "enabled": true }));
-            }
-        }
-    }
+    let is_supported = |gpu: &Value| {
+        gpu.get("supported")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    };
 
-    if let Some(Value::Object(map)) = tree.get("config").and_then(|c| c.get("gpus")) {
-        for id in map.keys() {
-            gpus_cfg
-                .entry(id.clone())
-                .or_insert_with(|| json!({ "enabled": true }));
-        }
-    }
-
-    // Also scan groups.*.config.gpus (multi-group machines).
-    if let Some(Value::Object(groups)) = tree.get("groups") {
-        for (_name, group) in groups {
-            if let Some(Value::Object(map)) = group.get("config").and_then(|c| c.get("gpus")) {
-                for id in map.keys() {
-                    gpus_cfg
-                        .entry(id.clone())
-                        .or_insert_with(|| json!({ "enabled": true }));
+    let mut cfg = serde_json::Map::new();
+    match detected {
+        Value::Object(map) => {
+            for (id, gpu) in map {
+                if is_supported(gpu) {
+                    cfg.insert(id.clone(), json!({ "enabled": true }));
                 }
             }
         }
+        Value::Array(arr) => {
+            for (i, gpu) in arr.iter().enumerate() {
+                if is_supported(gpu) {
+                    let id = gpu
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("gpu:{i}"));
+                    cfg.insert(id, json!({ "enabled": true }));
+                }
+            }
+        }
+        // Any other JSON type is not a GPU list; treat it as "nothing published".
+        _ => return None,
+    }
+    Some(cfg)
+}
+
+/// Wrap a resource-config object in the envelope a v8.5 client actually honours — one copy per
+/// reported resource group, under `config.groups.<name>` — and return the ready `config` command.
+///
+/// Every resource setting must go through here. Sending the same object at the top level of
+/// `config` is accepted by the socket and then dropped on the floor (see
+/// `enable_gpus_and_cpus_config` for the measurement); only identity keys live up there.
+///
+/// A v8.5 client always has at least the default group, whose name is the **empty string**, so an
+/// absent or empty `groups` map still yields one patch keyed `""` rather than a silent no-op.
+fn group_resource_config(tree: &Value, resources: &Value) -> String {
+    let mut groups_patch = serde_json::Map::new();
+    if let Some(Value::Object(groups)) = tree.get("groups") {
+        for name in groups.keys() {
+            groups_patch.insert(name.clone(), resources.clone());
+        }
+    }
+    if groups_patch.is_empty() {
+        groups_patch.insert(String::new(), resources.clone());
     }
 
-    let config = json!({
-        "gpus": gpus_cfg,
-        "cpus": cpus.max(1),
-        "paused": false,
-        "on_idle": false,
-        "cuda": true,
-        "hip": true
-    });
     let mut fields = serde_json::Map::new();
-    fields.insert("config".to_string(), config);
+    fields.insert("config".to_string(), json!({ "groups": groups_patch }));
     fah_cmd("config", fields)
 }
 
@@ -2875,8 +2972,12 @@ fn resolve_dump_unit_id(tree: &Value, query: &str) -> Result<String, String> {
 
 /// Scale FAH's `cpus` resource setting to Low(25%)/Medium(50%)/Full(100%) of available cores.
 /// Always leaves at least one core folding. This is resource control only — design §4: it never
-/// affects the mint. Official wire: `cmd: config`.
-fn power_config_message(level: PowerLevel, available_cores: usize) -> String {
+/// affects the mint.
+///
+/// Goes out through `group_resource_config`: `cpus` is a **group** setting, and the top-level
+/// `{"cpus":…}` this used to send was measured to change nothing on a live 8.5.6 client, so the
+/// Power control silently did nothing at every level.
+fn power_config_message(tree: &Value, level: PowerLevel, available_cores: usize) -> String {
     let factor = match level {
         PowerLevel::Low => 0.25,
         PowerLevel::Medium => 0.50,
@@ -2884,9 +2985,7 @@ fn power_config_message(level: PowerLevel, available_cores: usize) -> String {
     };
     let scaled = ((available_cores as f64) * factor).round() as u64;
     let cpus = scaled.max(1);
-    let mut fields = serde_json::Map::new();
-    fields.insert("config".to_string(), json!({ "cpus": cpus }));
-    fah_cmd("config", fields)
+    group_resource_config(tree, &json!({ "cpus": cpus }))
 }
 
 /// Read the number of cores available to fold from the FAH state tree, preferring the machine's
@@ -3487,9 +3586,18 @@ pub fn load_fah_viz_snapshot(unit_id: Option<&str>) -> Result<Option<FahVizSnaps
             Some(a) if a.len() >= 3 => a,
             _ => continue, // skip bad coord rows rather than failing the whole snapshot
         };
-        let x = xyz[0].as_f64().or_else(|| xyz[0].as_i64().map(|i| i as f64)).unwrap_or(0.0) as f32;
-        let y = xyz[1].as_f64().or_else(|| xyz[1].as_i64().map(|i| i as f64)).unwrap_or(0.0) as f32;
-        let z = xyz[2].as_f64().or_else(|| xyz[2].as_i64().map(|i| i as f64)).unwrap_or(0.0) as f32;
+        let x = xyz[0]
+            .as_f64()
+            .or_else(|| xyz[0].as_i64().map(|i| i as f64))
+            .unwrap_or(0.0) as f32;
+        let y = xyz[1]
+            .as_f64()
+            .or_else(|| xyz[1].as_i64().map(|i| i as f64))
+            .unwrap_or(0.0) as f32;
+        let z = xyz[2]
+            .as_f64()
+            .or_else(|| xyz[2].as_i64().map(|i| i as f64))
+            .unwrap_or(0.0) as f32;
         positions.push([x, y, z]);
     }
 
@@ -4423,7 +4531,13 @@ mod tests {
         let v: Value = serde_json::from_str(&msg).expect("json");
         assert_eq!(v.get("cmd").and_then(Value::as_str), Some("config"));
         assert!(v.get("time").is_some());
-        let cfg = v.get("config").expect("config");
+        // Resource keys live under config.groups.<name> — a top-level {"gpus":…,"cpus":…} patch
+        // is silently discarded by a live v8.5 client (see enable_gpus_and_cpus_config docs).
+        let cfg = v
+            .get("config")
+            .and_then(|c| c.get("groups"))
+            .and_then(|g| g.get(""))
+            .expect("config.groups.\"\" — default group patch");
         assert_eq!(cfg.get("paused").and_then(Value::as_bool), Some(false));
         assert_eq!(cfg.get("on_idle").and_then(Value::as_bool), Some(false));
         assert_eq!(cfg.get("cpus").and_then(Value::as_u64), Some(10));
@@ -4442,6 +4556,272 @@ mod tests {
         let fv: Value = serde_json::from_str(&fold[0]).expect("fold json");
         assert_eq!(fv.get("cmd").and_then(Value::as_str), Some("state"));
         assert_eq!(fv.get("state").and_then(Value::as_str), Some("fold"));
+    }
+
+    /// THE regression. The shipped builder put `gpus`/`cpus` at the top level of `config`, where
+    /// a live v8.5.6 client silently discards them — no error frame, nothing in `log.txt` — while
+    /// the identity patch on the same socket kept applying, so the socket looked healthy and the
+    /// machine folded CPU-only. Assert the resource keys are NOT at the top level, which is the
+    /// half a shape-only assertion on `config.groups` would happily let back in.
+    #[test]
+    fn resource_config_is_nested_under_groups_never_top_level() {
+        let tree = json!({
+            "info": { "gpus": { "gpu:01:00:00": { "supported": true } } },
+            "groups": { "": { "config": { "cpus": 31, "gpus": {} } } }
+        });
+        let v: Value = serde_json::from_str(&enable_gpus_and_cpus_config(&tree, 30)).expect("json");
+        let cfg = v.get("config").and_then(Value::as_object).expect("config");
+
+        for key in ["gpus", "cpus", "paused", "on_idle", "cuda", "hip"] {
+            assert!(
+                !cfg.contains_key(key),
+                "resource key {key:?} must NOT sit at the top level of `config` — v8.5 drops it \
+                 there without complaint; it belongs under config.groups.<name>"
+            );
+        }
+        assert_eq!(
+            cfg.keys().collect::<Vec<_>>(),
+            vec!["groups"],
+            "the config patch carries groups and nothing else"
+        );
+    }
+
+    /// The default resource group's name is the EMPTY STRING — a real key, not a missing one.
+    /// Keying the patch off a "no groups reported" fallback of `"default"` (or skipping the
+    /// patch) would silently reproduce the CPU-only bug on every stock client.
+    #[test]
+    fn group_patch_defaults_to_the_empty_string_key_when_tree_has_no_groups() {
+        let tree = json!({ "info": { "gpus": { "gpu:0": { "supported": true } } } });
+        let v: Value = serde_json::from_str(&enable_gpus_and_cpus_config(&tree, 6)).expect("json");
+        let groups = v
+            .get("config")
+            .and_then(|c| c.get("groups"))
+            .and_then(Value::as_object)
+            .expect("groups");
+        assert_eq!(groups.keys().collect::<Vec<_>>(), vec![""]);
+        assert_eq!(
+            groups[""].get("cpus").and_then(Value::as_u64),
+            Some(6),
+            "the fallback group must carry the real resource patch, not an empty stub"
+        );
+    }
+
+    /// Multi-group machines: every reported group is addressed, each with the full patch.
+    #[test]
+    fn group_patch_covers_every_reported_resource_group() {
+        let tree = json!({
+            "info": { "gpus": { "gpu:0": { "supported": true } } },
+            "groups": {
+                "": { "config": { "cpus": 8 } },
+                "rig2": { "config": { "cpus": 4 } }
+            }
+        });
+        let v: Value = serde_json::from_str(&enable_gpus_and_cpus_config(&tree, 12)).expect("json");
+        let groups = v
+            .get("config")
+            .and_then(|c| c.get("groups"))
+            .and_then(Value::as_object)
+            .expect("groups");
+        let mut names: Vec<&String> = groups.keys().collect();
+        names.sort();
+        assert_eq!(names, vec!["", "rig2"]);
+        for name in ["", "rig2"] {
+            let g = &groups[name];
+            assert_eq!(
+                g.get("cpus").and_then(Value::as_u64),
+                Some(12),
+                "group {name:?}"
+            );
+            assert_eq!(
+                g.get("gpus")
+                    .and_then(Value::as_object)
+                    .map(|m| m.len())
+                    .unwrap_or(0),
+                1,
+                "group {name:?} must get the enabled-GPU map too"
+            );
+        }
+    }
+
+    /// Built from the REAL tree captured off the founder's client (fah-client 8.5.6, 3 supported
+    /// GPUs, single default group named ""). The exact message this produces was replayed to that
+    /// live client and it assigned a GPU work unit
+    /// (`gpus:["gpu:01:00:00","gpu:03:00:00","gpu:122:00:00"]`) within seconds.
+    #[test]
+    fn real_v856_tree_enables_all_three_detected_gpus() {
+        let tree = json!({
+            "info": {
+                "version": "8.5.6",
+                "cpus": 32,
+                "account": "",
+                "gpus": {
+                    "gpu:01:00:00": { "type": "nvidia", "description": "NVIDIA GeForce RTX 5090", "supported": true },
+                    "gpu:03:00:00": { "type": "nvidia", "description": "NVIDIA GeForce RTX 4090", "supported": true },
+                    "gpu:122:00:00": { "type": "amd", "description": "gfx1036", "supported": true }
+                }
+            },
+            "config": { "user": "GOAT-StJohn", "team": 1068318, "cause": "any" },
+            "groups": { "": { "config": {
+                "on_idle": false, "on_battery": true, "keep_awake": true, "paused": false,
+                "finish": false, "beta": false, "cuda": true, "hip": true, "key": 0,
+                "cpus": 31, "gpus": {}
+            } } }
+        });
+        assert!(
+            !is_account_linked(&tree),
+            "empty info.account is NOT linked"
+        );
+
+        let v: Value =
+            serde_json::from_str(&enable_gpus_and_cpus_config(&tree, auto_cpus(32))).expect("json");
+        let g = v
+            .get("config")
+            .and_then(|c| c.get("groups"))
+            .and_then(|g| g.get(""))
+            .expect("default group patch");
+        let gpus = g.get("gpus").and_then(Value::as_object).expect("gpus");
+        let mut ids: Vec<&String> = gpus.keys().collect();
+        ids.sort();
+        assert_eq!(ids, vec!["gpu:01:00:00", "gpu:03:00:00", "gpu:122:00:00"]);
+        for id in ids {
+            assert_eq!(
+                gpus[id].get("enabled").and_then(Value::as_bool),
+                Some(true),
+                "{id} must be explicitly enabled"
+            );
+        }
+        assert_eq!(
+            g.get("cpus").and_then(Value::as_u64),
+            Some(30),
+            "32 - 2 headroom"
+        );
+    }
+
+    /// A tree snapshotted BEFORE the client finished its `GET /gpus` has no GPU key at all. Since
+    /// `gpus` is REPLACE, emitting an empty map there would WIPE the user's GPU config off a
+    /// snapshot that had merely not loaded yet — so the key is omitted entirely and existing
+    /// config survives. (`wait_until_gpus_known` makes this path rare; this makes it harmless.)
+    #[test]
+    fn tree_without_gpu_key_omits_gpus_entirely_rather_than_wiping() {
+        let pre_fetch = json!({ "info": { "cpus": 32 }, "groups": { "": { "config": {
+            "gpus": { "gpu:01:00:00": { "enabled": true } }
+        } } } });
+        let v: Value =
+            serde_json::from_str(&enable_gpus_and_cpus_config(&pre_fetch, 30)).expect("json");
+        let g = &v["config"]["groups"][""];
+        assert!(
+            g.get("gpus").is_none(),
+            "no published GPU list must send NO gpus key — an empty map would clear the user's \
+             enabled GPUs under replace semantics"
+        );
+        // The rest of the resource patch still goes out.
+        assert_eq!(g.get("cpus").and_then(Value::as_u64), Some(30));
+    }
+
+    /// A host that genuinely has no GPUs publishes an EMPTY list, which is a different fact from
+    /// "no list published" and must clear the config rather than be ignored.
+    #[test]
+    fn empty_published_gpu_list_sends_an_empty_map_not_a_missing_key() {
+        let tree = json!({ "info": { "cpus": 8, "gpus": {} } });
+        let v: Value = serde_json::from_str(&enable_gpus_and_cpus_config(&tree, 6)).expect("json");
+        let gpus = v["config"]["groups"][""]
+            .get("gpus")
+            .and_then(Value::as_object)
+            .expect("an empty list is still a list — the key must be present");
+        assert!(gpus.is_empty());
+    }
+
+    /// Founder requirement: every Start re-checks what is actually present. A GPU the client no
+    /// longer detects must NOT be carried over from its stored config — `gpus` is replace, so
+    /// naming a dead id would pin it enabled forever and the config would never converge.
+    #[test]
+    fn start_drops_a_gpu_that_is_no_longer_detected() {
+        // Client still has two GPUs in its stored config; only one is detected now.
+        let tree = json!({
+            "info": { "gpus": { "gpu:01:00:00": { "supported": true } } },
+            "config": { "gpus": { "gpu:03:00:00": { "enabled": true } } },
+            "groups": { "": { "config": { "gpus": {
+                "gpu:01:00:00": { "enabled": true },
+                "gpu:03:00:00": { "enabled": true }
+            } } } }
+        });
+        let v: Value = serde_json::from_str(&enable_gpus_and_cpus_config(&tree, 30)).expect("json");
+        let gpus = v["config"]["groups"][""]["gpus"]
+            .as_object()
+            .expect("gpus map");
+        assert_eq!(
+            gpus.keys().collect::<Vec<_>>(),
+            vec!["gpu:01:00:00"],
+            "only the currently-detected GPU may be named; the removed one must not be revived \
+             from config.gpus or groups.*.config.gpus"
+        );
+    }
+
+    /// The other direction: a GPU added since the last session is picked up with no user action.
+    #[test]
+    fn start_enables_a_gpu_that_appeared_since_last_session() {
+        let tree = json!({
+            "info": { "gpus": {
+                "gpu:01:00:00": { "supported": true },
+                "gpu:99:00:00": { "supported": true, "description": "newly installed" }
+            } },
+            "groups": { "": { "config": { "gpus": { "gpu:01:00:00": { "enabled": true } } } } }
+        });
+        let v: Value = serde_json::from_str(&enable_gpus_and_cpus_config(&tree, 30)).expect("json");
+        let gpus = v["config"]["groups"][""]["gpus"]
+            .as_object()
+            .expect("gpus map");
+        let mut ids: Vec<&String> = gpus.keys().collect();
+        ids.sort();
+        assert_eq!(ids, vec!["gpu:01:00:00", "gpu:99:00:00"]);
+        assert_eq!(
+            gpus["gpu:99:00:00"].get("enabled").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    /// A GPU that FAH now reports `supported:false` (driver removed/downgraded) must be dropped,
+    /// even though the client's stored config still has it enabled from when it worked.
+    #[test]
+    fn start_drops_a_gpu_that_became_unsupported() {
+        let tree = json!({
+            "info": { "gpus": {
+                "gpu:01:00:00": { "supported": true },
+                "gpu:03:00:00": { "supported": false }
+            } },
+            "groups": { "": { "config": { "gpus": {
+                "gpu:01:00:00": { "enabled": true },
+                "gpu:03:00:00": { "enabled": true }
+            } } } }
+        });
+        let v: Value = serde_json::from_str(&enable_gpus_and_cpus_config(&tree, 30)).expect("json");
+        let gpus = v["config"]["groups"][""]["gpus"]
+            .as_object()
+            .expect("gpus map");
+        assert_eq!(gpus.keys().collect::<Vec<_>>(), vec!["gpu:01:00:00"]);
+    }
+
+    /// The array shape (top-level `gpus: [...]`) must reconcile identically, ids taken from the
+    /// element's own `id`.
+    #[test]
+    fn detected_gpus_handles_the_array_shape() {
+        let tree = json!({ "gpus": [
+            { "id": "gpu:aa", "supported": true },
+            { "id": "gpu:bb", "supported": false }
+        ] });
+        let cfg = detected_supported_gpus(&tree).expect("list published");
+        assert_eq!(cfg.keys().collect::<Vec<_>>(), vec!["gpu:aa"]);
+    }
+
+    /// `None` (nothing published) and `Some(empty)` (published, none present) are different facts
+    /// and the builder branches on the difference — pin it so a refactor cannot collapse them.
+    #[test]
+    fn detected_gpus_distinguishes_absent_from_empty() {
+        assert!(detected_supported_gpus(&json!({ "info": { "cpus": 8 } })).is_none());
+        assert_eq!(
+            detected_supported_gpus(&json!({ "info": { "gpus": {} } })).map(|m| m.len()),
+            Some(0)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -4541,23 +4921,41 @@ mod tests {
 
     #[test]
     fn power_config_scales_cores_and_never_zero() {
+        // Power is a GROUP setting like every other resource key: /config/groups/<name>/cpus.
+        // The old /config/cpus pointer is the shape a live 8.5.6 silently ignores.
+        let tree = json!({ "groups": { "": { "config": { "cpus": 31 } } } });
+        let at = |v: &Value| v.pointer("/config/groups//cpus").and_then(Value::as_u64);
+
         let full: Value =
-            serde_json::from_str(&power_config_message(PowerLevel::Full, 16)).unwrap();
+            serde_json::from_str(&power_config_message(&tree, PowerLevel::Full, 16)).unwrap();
         assert_eq!(full.get("cmd").and_then(Value::as_str), Some("config"));
-        assert_eq!(
-            full.pointer("/config/cpus").and_then(Value::as_u64),
-            Some(16)
+        assert_eq!(at(&full), Some(16));
+        assert!(
+            full.pointer("/config/cpus").is_none(),
+            "cpus must NOT be at the top level of config — v8.5 drops it there"
         );
+
         let med: Value =
-            serde_json::from_str(&power_config_message(PowerLevel::Medium, 16)).unwrap();
-        assert_eq!(med.pointer("/config/cpus").and_then(Value::as_u64), Some(8));
-        let low: Value = serde_json::from_str(&power_config_message(PowerLevel::Low, 16)).unwrap();
-        assert_eq!(low.pointer("/config/cpus").and_then(Value::as_u64), Some(4));
+            serde_json::from_str(&power_config_message(&tree, PowerLevel::Medium, 16)).unwrap();
+        assert_eq!(at(&med), Some(8));
+        let low: Value =
+            serde_json::from_str(&power_config_message(&tree, PowerLevel::Low, 16)).unwrap();
+        assert_eq!(at(&low), Some(4));
         // Never scales below one folding core, even on a single-core host at Low.
-        let low1: Value = serde_json::from_str(&power_config_message(PowerLevel::Low, 1)).unwrap();
+        let low1: Value =
+            serde_json::from_str(&power_config_message(&tree, PowerLevel::Low, 1)).unwrap();
+        assert_eq!(at(&low1), Some(1));
+    }
+
+    /// Power must reach a stock client too, whose tree Goat may have snapshotted before the
+    /// `groups` map arrived: the fallback still addresses the default group by its real name.
+    #[test]
+    fn power_config_falls_back_to_the_default_group_when_groups_absent() {
+        let v: Value =
+            serde_json::from_str(&power_config_message(&json!({}), PowerLevel::Full, 8)).unwrap();
         assert_eq!(
-            low1.pointer("/config/cpus").and_then(Value::as_u64),
-            Some(1)
+            v.pointer("/config/groups//cpus").and_then(Value::as_u64),
+            Some(8)
         );
     }
 
@@ -4971,6 +5369,28 @@ mod tests {
         assert!(status.state != "not_installed");
     }
 
+    /// Emit the resource-config command built from the LIVE client's own state tree, so it can be
+    /// replayed against that client and the GPU enable verified end-to-end (the unit tests above
+    /// only pin the shape; the shape is exactly what was wrong before). Writes to
+    /// `$GOAT_FAH_WIRE_OUT` when set, else stdout under `--nocapture`.
+    #[tokio::test]
+    #[ignore = "requires a running FAHClient v8 local API on 127.0.0.1:7396"]
+    async fn live_emit_resource_config_wire() {
+        let backend = FahBackend::new();
+        backend.connect().await.expect("connect");
+        assert!(
+            backend.wait_until_gpus_known(WS_GPU_WAIT_TOTAL).await,
+            "client never published a GPU list"
+        );
+        let tree = backend.live.lock().expect("live mutex").tree.clone();
+        let msg = enable_gpus_and_cpus_config(&tree, auto_cpus(host_parallelism()));
+        match std::env::var("GOAT_FAH_WIRE_OUT") {
+            Ok(path) => std::fs::write(&path, &msg).expect("write wire message"),
+            Err(_) => println!("{msg}"),
+        }
+        backend.disconnect().await.expect("disconnect");
+    }
+
     #[tokio::test]
     #[ignore = "requires FAH_TEST_USER env var and network access to the stats API"]
     async fn live_stats_poll() {
@@ -5185,7 +5605,10 @@ mod tests {
             "re-linking must still require the user's own FAH web client: {msg}"
         );
         for banned in ["wage", "paycheck", "salary", "income", "guaranteed"] {
-            assert!(!lower.contains(banned), "banned vocabulary '{banned}': {msg}");
+            assert!(
+                !lower.contains(banned),
+                "banned vocabulary '{banned}': {msg}"
+            );
         }
     }
 
@@ -5247,11 +5670,8 @@ mod tests {
     /// `linked` controls whether the account-link rows are present.
     fn make_fixture_client_db(path: &Path, linked: bool) {
         let conn = Connection::open(path).expect("open fixture client.db");
-        conn.execute(
-            "CREATE TABLE \"config\" (name TEXT PRIMARY KEY, value)",
-            [],
-        )
-        .expect("create config table");
+        conn.execute("CREATE TABLE \"config\" (name TEXT PRIMARY KEY, value)", [])
+            .expect("create config table");
         // Non-account rows every real client.db has — must survive untouched.
         conn.execute(
             "INSERT INTO config (name, value) VALUES ('config', ?1)",
@@ -5383,11 +5803,8 @@ mod tests {
         // corrupted or foreign file that happens to share the table name. Include an
         // account-token row to prove presence of link keys never overrides the sentinel check.
         let conn = Connection::open(&db_path).expect("open");
-        conn.execute(
-            "CREATE TABLE \"config\" (name TEXT PRIMARY KEY, value)",
-            [],
-        )
-        .expect("create config table");
+        conn.execute("CREATE TABLE \"config\" (name TEXT PRIMARY KEY, value)", [])
+            .expect("create config table");
         conn.execute(
             "INSERT INTO config (name, value) VALUES ('account-token', 'fake-token')",
             [],
@@ -5461,13 +5878,19 @@ mod tests {
         .await;
 
         assert!(killed.load(Ordering::SeqCst), "kill ran");
-        assert!(opened.load(Ordering::SeqCst), "DB step ran (confirmed down)");
+        assert!(
+            opened.load(Ordering::SeqCst),
+            "DB step ran (confirmed down)"
+        );
         assert!(
             restarted.load(Ordering::SeqCst),
             "FIX-1: restart MUST run even when the DB delete errored"
         );
         assert!(outcome.is_err(), "the DB error propagates AFTER restart");
-        assert!(!in_flight.load(Ordering::SeqCst), "single-flight flag cleared");
+        assert!(
+            !in_flight.load(Ordering::SeqCst),
+            "single-flight flag cleared"
+        );
     }
 
     #[tokio::test]
@@ -5486,7 +5909,10 @@ mod tests {
         )
         .await;
         assert_eq!(outcome, Ok(UnlinkOutcome::Unlinked));
-        assert!(restarted.load(Ordering::SeqCst), "restart runs on the success path too");
+        assert!(
+            restarted.load(Ordering::SeqCst),
+            "restart runs on the success path too"
+        );
         assert!(!in_flight.load(Ordering::SeqCst));
     }
 
@@ -5501,7 +5927,7 @@ mod tests {
 
         let outcome = unlink_managed_account_with(
             &in_flight,
-            || {}, // kill attempted, but…
+            || {},              // kill attempted, but…
             || async { false }, // …it never went down
             move || async move {
                 o.store(true, Ordering::SeqCst);
@@ -5513,7 +5939,10 @@ mod tests {
         )
         .await;
 
-        assert!(outcome.is_err(), "still-up must surface an error (caller pauses)");
+        assert!(
+            outcome.is_err(),
+            "still-up must surface an error (caller pauses)"
+        );
         assert!(
             !opened.load(Ordering::SeqCst),
             "FIX-2: must NOT open/mutate client.db while the process is still up"
@@ -5522,7 +5951,10 @@ mod tests {
             !restarted.load(Ordering::SeqCst),
             "FIX-1: must NOT restart when the client never went down (still running)"
         );
-        assert!(!in_flight.load(Ordering::SeqCst), "flag cleared on the abort path too");
+        assert!(
+            !in_flight.load(Ordering::SeqCst),
+            "flag cleared on the abort path too"
+        );
     }
 
     #[tokio::test]
@@ -5792,7 +6224,10 @@ mod tests {
         // Guard counters unchanged — the overlapping poll returned before touching them.
         let guard = backend.guard.lock().expect("guard");
         assert_eq!(guard.mismatches_after_repush, MID_RUN_GUARD_THRESHOLD);
-        assert!(!guard.stopped, "must not mark the episode stopped from an overlapping poll");
+        assert!(
+            !guard.stopped,
+            "must not mark the episode stopped from an overlapping poll"
+        );
         drop(guard);
 
         let _ = std::fs::remove_dir_all(&dir);

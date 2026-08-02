@@ -179,24 +179,41 @@ use crate::chain::{
 use crate::merkle::keccak256;
 
 // ---------------------------------------------------------------------------
-// Action type constants — StreamGTypes.sol:28-32.
+// Action type constants — StreamGTypes.sol:29-45.
 // ---------------------------------------------------------------------------
 
 pub const ACTION_SPONSORED_ENROLLMENT_STR: &str = "GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1";
 pub const ACTION_SPONSORED_SELL_STR: &str = "GOAT_STREAM_G_SPONSORED_SELL_V1";
 pub const ACTION_GOAT_TRANSFER_STR: &str = "GOAT_STREAM_G_GOAT_TRANSFER_V1";
 pub const ACTION_USDT_TRANSFER_STR: &str = "GOAT_STREAM_G_USDT_TRANSFER_V1";
+pub const ACTION_PROXY_CLAIM_STR: &str = "GOAT_STREAM_G_PROXY_CLAIM_V1";
+pub const ACTION_PROXY_PROPOSE_BATCH_STR: &str = "GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1";
+pub const ACTION_PROXY_CHALLENGE_BATCH_STR: &str = "GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1";
 
-/// One of the four Stream G action types (`StreamGTypes.sol:28-32`).
+/// One of the seven Stream G action types (`StreamGTypes.sol:29-45`).
 /// Deliberately an enum, not a raw `[u8; 32]` or a bare integer — see
 /// [`ActionType::digest`]. Only [`ActionType::SponsoredEnrollment`] has a
 /// wired-up quote path in this task; see module doc.
+///
+/// The three `Proxy*` variants reserve tariff keys and gateway nonce
+/// namespace for the residential-proxy settlement surface. `GoatRelayGateway`
+/// recognises their digests in `nonceSnapshot` and exposes no `execute*`
+/// entrypoint for any of them, so none is sponsorable today — do not read
+/// their presence in a schedule as a claim that one is.
+///
+/// The variants carry no meaningful integer discriminant: nothing in this
+/// crate, in `StreamGTypes.sol`, or on the wire encodes an ordinal. The
+/// cross-language binding is `keccak256(as_str())` alone, pinned on the
+/// Solidity side by `StreamGEip712Parity.t.sol`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActionType {
     SponsoredEnrollment,
     SponsoredSell,
     GoatTransfer,
     UsdtTransfer,
+    ProxyClaim,
+    ProxyProposeBatch,
+    ProxyChallengeBatch,
 }
 
 impl ActionType {
@@ -208,6 +225,9 @@ impl ActionType {
             ActionType::SponsoredSell => ACTION_SPONSORED_SELL_STR,
             ActionType::GoatTransfer => ACTION_GOAT_TRANSFER_STR,
             ActionType::UsdtTransfer => ACTION_USDT_TRANSFER_STR,
+            ActionType::ProxyClaim => ACTION_PROXY_CLAIM_STR,
+            ActionType::ProxyProposeBatch => ACTION_PROXY_PROPOSE_BATCH_STR,
+            ActionType::ProxyChallengeBatch => ACTION_PROXY_CHALLENGE_BATCH_STR,
         }
     }
 

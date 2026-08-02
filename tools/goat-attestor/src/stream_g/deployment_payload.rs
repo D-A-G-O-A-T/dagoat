@@ -399,8 +399,7 @@ impl DeploymentPayload {
             )));
         }
 
-        canonical_decimal("payload.deploymentVersion", &p.deployment_version)
-            .map_err(parse_err)?;
+        canonical_decimal("payload.deploymentVersion", &p.deployment_version).map_err(parse_err)?;
         let payload_chain_id =
             canonical_decimal("payload.chainId", &p.chain_id).map_err(parse_err)?;
         release_commit("payload.releaseCommit", &p.release_commit).map_err(parse_err)?;
@@ -416,9 +415,8 @@ impl DeploymentPayload {
                 Some(v) => v,
                 None => continue,
             };
-            let address =
-                hex_bytes::<20>(&format!("payload.accounts.{role}"), spelled, true)
-                    .map_err(parse_err)?;
+            let address = hex_bytes::<20>(&format!("payload.accounts.{role}"), spelled, true)
+                .map_err(parse_err)?;
             accounts.insert(role.to_string(), address);
         }
 
@@ -431,9 +429,12 @@ impl DeploymentPayload {
                 Some(entry) => entry,
                 None => continue,
             };
-            let address =
-                hex_bytes::<20>(&format!("payload.contracts.{role}.address"), &entry.address, true)
-                    .map_err(parse_err)?;
+            let address = hex_bytes::<20>(
+                &format!("payload.contracts.{role}.address"),
+                &entry.address,
+                true,
+            )
+            .map_err(parse_err)?;
             let runtime_code_hash = hex_bytes::<32>(
                 &format!("payload.contracts.{role}.runtimeCodeHash"),
                 &entry.runtime_code_hash,
@@ -460,9 +461,12 @@ impl DeploymentPayload {
 
         // Metadata, outside the payload: case-insensitive because nothing
         // hashes it.
-        let declared_deployment_manifest_hash =
-            hex_bytes::<32>("deploymentManifestHash", &file.deployment_manifest_hash, false)
-                .map_err(parse_err)?;
+        let declared_deployment_manifest_hash = hex_bytes::<32>(
+            "deploymentManifestHash",
+            &file.deployment_manifest_hash,
+            false,
+        )
+        .map_err(parse_err)?;
 
         Ok(Self {
             declared_deployment_manifest_hash,
@@ -729,9 +733,9 @@ fn hex_bytes<const N: usize>(
     } else {
         ""
     };
-    let body = s.strip_prefix("0x").ok_or_else(|| {
-        format!("{field} = {s:?} is not a 0x-prefixed {N}-byte hex string{hint}")
-    })?;
+    let body = s
+        .strip_prefix("0x")
+        .ok_or_else(|| format!("{field} = {s:?} is not a 0x-prefixed {N}-byte hex string{hint}"))?;
     if body.len() != N * 2 || !body.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!(
             "{field} = {s:?} is not a 0x-prefixed {N}-byte hex string{hint}"
@@ -933,9 +937,8 @@ mod tests {
             (
                 "contracts[*].runtimeCodeHash",
                 Box::new(|doc: &mut Value| {
-                    doc["payload"]["contracts"]["GATEWAY"]["runtimeCodeHash"] = json!(
-                        "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
-                    );
+                    doc["payload"]["contracts"]["GATEWAY"]["runtimeCodeHash"] =
+                        json!("0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
                 }),
             ),
             (
@@ -1090,7 +1093,9 @@ mod tests {
     /// "missing field `accounts`".
     #[test]
     fn refuses_a_wrong_payload_schema_version() {
-        let detail = parse_detail(&doc_with(|doc| doc["payload"]["schemaVersion"] = json!("1")));
+        let detail = parse_detail(&doc_with(|doc| {
+            doc["payload"]["schemaVersion"] = json!("1")
+        }));
         assert!(detail.contains("payload.schemaVersion"), "{detail}");
         assert!(
             detail.contains("Schema 1 had no `accounts` map"),
@@ -1180,7 +1185,9 @@ mod tests {
     #[test]
     fn refuses_a_release_commit_that_is_not_forty_hex() {
         for bad in ["HEAD", "0x0000000000000000000000000000000000000000", ""] {
-            let detail = parse_detail(&doc_with(|doc| doc["payload"]["releaseCommit"] = json!(bad)));
+            let detail = parse_detail(&doc_with(|doc| {
+                doc["payload"]["releaseCommit"] = json!(bad)
+            }));
             assert!(detail.contains("40 hex digits"), "{bad}: {detail}");
         }
     }

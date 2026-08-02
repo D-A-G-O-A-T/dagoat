@@ -6,7 +6,13 @@ solc_version = "0.8.24"
 optimizer = true
 optimizer_runs = 200
 via_ir = true
-fs_permissions = [{ access = "read-write", path = "./deployments" }]
+fs_permissions = [
+    { access = "read-write", path = "./deployments" },
+    # The no-burn ABI scan reads the compiled artifact. Read-only, and scoped to the
+    # build output directory: `out/` is generated, so a read grant discloses nothing
+    # a `forge build` did not already produce.
+    { access = "read", path = "./out" },
+]
 
 [rpc_endpoints]
 base_sepolia = "${BASE_SEPOLIA_RPC_URL}"

@@ -1,0 +1,18 @@
+{
+  "schema_id": "GOAT_PROXY_CONSENT_PREIMAGE_V1",
+  "note": "The exact bytes an operator's signature is over. Written by hand in three places -- the desktop builds it with .join(\"\\n\"), the desktop's Rust side rebuilds it in a format! string, and the sidecar's consent module builds it a third time -- so all three assert against THIS file rather than against each other's memory of it. preimage_hex is the 0x-hex of the UTF-8 bytes, recorded as hex so trailing whitespace and newline handling cannot be guessed. THE EIP-191 PREFIX IS APPLIED OVER THE DECODED BYTES, NEVER OVER THE HEX STRING: get it wrong and every operator signature fails, get it inconsistently wrong and the desktop accepts a record the sidecar refuses.",
+  "record": {
+    "schema": 1,
+    "policy_version": 1,
+    "policy_digest": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "allowlist_digest": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "wallet": "0x00112233445566778899aabbccddeeff00112233",
+    "device_id": "device-0001",
+    "daily_ceiling_bytes": "10737418240",
+    "throttle_bytes_per_sec": "1250000",
+    "granted_at_unix": "1780000000",
+    "expires_at_unix": "1787776000"
+  },
+  "preimage_hex": "0x474f4154205265736964656e7469616c2050726f787920436f6e73656e74205265636f72642076310a736368656d613a20310a706f6c6963795f76657273696f6e3a20310a706f6c6963795f6469676573743a203078616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161610a616c6c6f776c6973745f6469676573743a203078626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262620a77616c6c65743a203078303031313232333334343535363637373838393961616262636364646565666630303131323233330a6465766963655f69643a206465766963652d303030310a6461696c795f6365696c696e675f62797465733a2031303733373431383234300a7468726f74746c655f62797465735f7065725f7365633a20313235303030300a6772616e7465645f61745f756e69783a20313738303030303030300a657870697265735f61745f756e69783a2031373837373736303030",
+  "preimage_keccak": "0xbc47d9a678fedaf6d5a210be713182e95030ddd8465fe96411d24deac3a4b555"
+}

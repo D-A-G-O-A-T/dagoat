@@ -650,7 +650,7 @@ const FEE_SCHEDULE_V1_MIGRATION: &str = concat!(
     "calldataByteCeilings, maxNativeExposureWei), and `feeScheduleHash` stopped being an ",
     "opaque governance tag: it is now keccak256(UTF8(RFC8785(payload))), a digest of the ",
     "values themselves. To regenerate: set schemaVersion to 2; move each tariff into ",
-    "payload.actionFeesRaw, which must carry all four canonical actionType names (use null ",
+    "payload.actionFeesRaw, which must carry all seven canonical actionType names (use null ",
     "for an action with no approved tariff); fill the remaining payload fields as decimal ",
     "strings with a lowercase 0x feeToken; then set feeScheduleHash to the payload's digest ",
     "and republish that same value on-chain as STREAM_G_FEE_SCHEDULE_HASH. ",
@@ -672,7 +672,7 @@ const FEE_SCHEDULE_V1_MIGRATION: &str = concat!(
 /// **Zero-config STARTUP is not zero-config QUOTING, and this constant is the
 /// clearest place to say so.** Every `actionFeesRaw` entry in this document is
 /// `null`, so [`FeeSchedule::fee_for`] answers [`ERR_MISSING_TARIFF`] for all
-/// four actions and the quote path refuses. That is not a gap in the fallback:
+/// seven actions and the quote path refuses. That is not a gap in the fallback:
 /// the Season-0 tariffs are a founder decision that has not been taken, and a
 /// built-in that invented an amount would sign a price nobody approved into an
 /// EIP-712 `FeeQuote` (`models::fee_quote_struct_hash`). The fallback buys a
@@ -733,7 +733,8 @@ struct FeeScheduleFile {
 ///
 /// `actionFeesRaw` values are `Option<String>` — `null` means **no tariff is
 /// set for this action**. The keys cannot simply be omitted (the spec requires
-/// "exactly the four canonical actionType names"), and a zero or any other
+/// "exactly the … canonical actionType names", seven of them since the
+/// residential-proxy rows), and a zero or any other
 /// parseable amount would be a placeholder PRICE, which
 /// `models::fee_quote_struct_hash` would sign verbatim into a payer-facing
 /// EIP-712 quote where nothing downstream could tell it from a real one. `null`
@@ -755,13 +756,20 @@ struct SchedulePayloadFile {
     max_native_exposure_wei: String,
 }
 
-/// The four canonical action types, in `StreamGTypes.sol:28-32` order. Every
-/// action map in a payload must carry exactly these four names as keys.
-const CANONICAL_ACTION_TYPES: [ActionType; 4] = [
+/// The seven canonical action types, in `StreamGTypes.sol:29-45` order. Every
+/// action map in a payload must carry exactly these seven names as keys.
+///
+/// The last three are the residential-proxy settlement rows added 2026-07-31.
+/// They reserve tariff keys; `GoatRelayGateway` has no `execute*` entrypoint
+/// for any of them, so a tariff set on those rows could not be quoted.
+const CANONICAL_ACTION_TYPES: [ActionType; 7] = [
     ActionType::SponsoredEnrollment,
     ActionType::SponsoredSell,
     ActionType::GoatTransfer,
     ActionType::UsdtTransfer,
+    ActionType::ProxyClaim,
+    ActionType::ProxyProposeBatch,
+    ActionType::ProxyChallengeBatch,
 ];
 
 /// A canonical decimal string: ASCII digits only, no sign, no whitespace, no
@@ -834,7 +842,7 @@ fn canonical_lowercase_address(field: &str, s: &str) -> Result<[u8; 20], String>
     Ok(out)
 }
 
-/// Exactly the four canonical action names — no more, no fewer.
+/// Exactly the seven canonical action names — no more, no fewer.
 ///
 /// The "no more" half is the one that changed behaviour: under the v1 flat
 /// `tariffs` map an unrecognised key was silently dropped, which turned a typo
@@ -862,7 +870,7 @@ fn require_exact_action_map<T>(field: &str, map: &HashMap<String, T>) -> Result<
     }
     let canonical: Vec<&str> = CANONICAL_ACTION_TYPES.iter().map(|a| a.as_str()).collect();
     Err(format!(
-        "{field} must contain exactly the four canonical actionType names {canonical:?}; \
+        "{field} must contain exactly the seven canonical actionType names {canonical:?}; \
          missing {missing:?}, unrecognised {unrecognised:?}"
     ))
 }
@@ -918,6 +926,13 @@ impl FeeSchedule {
     /// > the four canonical actionType names.
     /// > feeScheduleHash = keccak256(UTF8(RFC8785(schedulePayload)))."
     ///
+    /// The block quote above is the spec's wording and says "four" because
+    /// four is what Stream G shipped with. The canonical set is now SEVEN —
+    /// [`CANONICAL_ACTION_TYPES`] — after the three residential-proxy
+    /// settlement rows were reserved. The rule the spec states (an action map
+    /// carries exactly the canonical names, no more and no fewer) is
+    /// unchanged; only the membership grew.
+    ///
     /// So the parser computes `keccak256(UTF8(RFC8785(payload)))` with
     /// [`crate::canonical_hash`] and keeps it alongside the hash the file
     /// declares. Editing any amount now changes the digest.
@@ -970,7 +985,7 @@ impl FeeSchedule {
     /// - a payload `schemaVersion` other than
     ///   [`SCHEDULE_PAYLOAD_SCHEMA_VERSION`];
     /// - any unknown field, at either level (`deny_unknown_fields`);
-    /// - any action map that is not exactly the four canonical names
+    /// - any action map that is not exactly the seven canonical names
     ///   (`require_exact_action_map`) — under v1 an unrecognised key was
     ///   silently dropped;
     /// - any integer that is not a canonical decimal string, or a `feeToken`
@@ -1186,19 +1201,19 @@ impl FeeSchedule {
         }
 
         canonical_decimal("payload.scheduleVersion", &p.schedule_version).map_err(parse_err)?;
-        let payload_chain_id = canonical_decimal("payload.chainId", &p.chain_id)
-            .map_err(parse_err)?;
-        let payload_decimals = canonical_decimal("payload.decimals", &p.decimals)
-            .map_err(parse_err)?;
+        let payload_chain_id =
+            canonical_decimal("payload.chainId", &p.chain_id).map_err(parse_err)?;
+        let payload_decimals =
+            canonical_decimal("payload.decimals", &p.decimals).map_err(parse_err)?;
         canonical_decimal("payload.maxNativeExposureWei", &p.max_native_exposure_wei)
             .map_err(parse_err)?;
         let payload_fee_token =
             canonical_lowercase_address("payload.feeToken", &p.fee_token).map_err(parse_err)?;
 
-        let valid_after = canonical_decimal("payload.validAfter", &p.valid_after)
-            .map_err(parse_err)?;
-        let valid_until = canonical_decimal("payload.validUntil", &p.valid_until)
-            .map_err(parse_err)?;
+        let valid_after =
+            canonical_decimal("payload.validAfter", &p.valid_after).map_err(parse_err)?;
+        let valid_until =
+            canonical_decimal("payload.validUntil", &p.valid_until).map_err(parse_err)?;
         if valid_after > valid_until {
             return Err(parse_err(format!(
                 "payload.validAfter {valid_after} is after payload.validUntil {valid_until}: \
@@ -1207,8 +1222,7 @@ impl FeeSchedule {
             )));
         }
 
-        require_exact_action_map("payload.actionFeesRaw", &p.action_fees_raw)
-            .map_err(parse_err)?;
+        require_exact_action_map("payload.actionFeesRaw", &p.action_fees_raw).map_err(parse_err)?;
         require_exact_action_map("payload.gasUnitCeilings", &p.gas_unit_ceilings)
             .map_err(parse_err)?;
         require_exact_action_map("payload.calldataByteCeilings", &p.calldata_byte_ceilings)
@@ -1230,12 +1244,13 @@ impl FeeSchedule {
                 }
             }
             // `None` (JSON `null`) means "no tariff set for this action" and is
-            // NOT an error: it is how a schedule ships with the four required
+            // NOT an error: it is how a schedule ships with the seven required
             // keys present and no price. `fee_for` then answers
             // `MISSING_TARIFF` and the quote path refuses.
             if let Some(Some(raw_amount)) = p.action_fees_raw.get(key) {
-                let amount = canonical_decimal(&format!("payload.actionFeesRaw[{key}]"), raw_amount)
-                    .map_err(parse_err)?;
+                let amount =
+                    canonical_decimal(&format!("payload.actionFeesRaw[{key}]"), raw_amount)
+                        .map_err(parse_err)?;
                 tariffs.insert(key, amount);
             }
         }
@@ -1268,7 +1283,7 @@ impl FeeSchedule {
             .ok_or(QuoteError::MissingTariff(action.as_str()))
     }
 
-    /// Whether **any** of the four canonical actions has a tariff.
+    /// Whether **any** of the seven canonical actions has a tariff.
     ///
     /// `load` only inserts a key when `payload.actionFeesRaw[key]` is a
     /// non-null amount, so an empty table means every action answers
@@ -1380,10 +1395,7 @@ impl FeeSchedule {
     /// agree on): they exist so the struct is constructible, not so a test can
     /// pass the startup agreement checks without a file.
     #[cfg(test)]
-    pub fn for_test_with_hash(
-        pairs: &[(ActionType, u128)],
-        fee_schedule_hash: [u8; 32],
-    ) -> Self {
+    pub fn for_test_with_hash(pairs: &[(ActionType, u128)], fee_schedule_hash: [u8; 32]) -> Self {
         let mut tariffs = HashMap::new();
         for (action, amount) in pairs {
             tariffs.insert(action.as_str(), *amount);
@@ -3369,8 +3381,8 @@ mod tests {
     /// the comparison narrow the payload to `u8` instead of widening the
     /// registry value is covered by the third arm.
     #[tokio::test]
-    async fn a_schedule_decimals_claim_the_live_token_contradicts_is_refused_before_any_fee_is_used()
-    {
+    async fn a_schedule_decimals_claim_the_live_token_contradicts_is_refused_before_any_fee_is_used(
+    ) {
         let (_dir, store) = open_store().await;
         let manifest = manifest_fixture();
         let token_cap = authorized_token_capability(&manifest);
@@ -4111,6 +4123,51 @@ mod tests {
             hex::encode(ActionType::UsdtTransfer.digest()),
             "7155e5f8a6c539fe86bb0eda9c0f21ddd9b9a9e2e658b504814f6c38c50f19e8"
         );
+
+        // Residential-proxy settlement rows. Digests independently re-derived
+        // with foundry `cast keccak` and with the repository's JavaScript
+        // keccak (`contracts/test/keccak256.mjs`) before being written here;
+        // the Solidity side pins the same four-way agreement in
+        // `StreamGEip712Parity.t.sol::test_action_type_constants_match_design`.
+        assert_eq!(
+            super::super::models::ACTION_PROXY_CLAIM_STR,
+            "GOAT_STREAM_G_PROXY_CLAIM_V1"
+        );
+        assert_eq!(
+            hex::encode(ActionType::ProxyClaim.digest()),
+            "03791b0650b89c9f3b82a61b43fdd4129842b5036666c3e071af74325dc17ed9"
+        );
+
+        assert_eq!(
+            super::super::models::ACTION_PROXY_PROPOSE_BATCH_STR,
+            "GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1"
+        );
+        assert_eq!(
+            hex::encode(ActionType::ProxyProposeBatch.digest()),
+            "5e1dabd4d4b0e517013f1c8e075dab1c1f6bc95ee81ff1afbfdf2b1907a73cb7"
+        );
+
+        assert_eq!(
+            super::super::models::ACTION_PROXY_CHALLENGE_BATCH_STR,
+            "GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1"
+        );
+        assert_eq!(
+            hex::encode(ActionType::ProxyChallengeBatch.digest()),
+            "274e67d1bddbe9e93b190fdf58c0e6ab56865c58974ce3b4bb37f5482f5d259f"
+        );
+
+        // No two action types may share a digest — a collision would let one
+        // signed intent be replayed under another action's nonce namespace.
+        let mut seen: Vec<[u8; 32]> = Vec::new();
+        for action in super::CANONICAL_ACTION_TYPES {
+            let d = action.digest();
+            assert!(
+                !seen.contains(&d),
+                "{action:?} shares a digest with an earlier action type"
+            );
+            seen.push(d);
+        }
+        assert_eq!(seen.len(), 7);
     }
 
     #[test]
@@ -6442,10 +6499,13 @@ mod tests {
     ///
     /// Mutating a parsed `Value` rather than string-splicing so a malformed
     /// case is malformed in exactly the one way the test names.
-    fn payload_with(mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) -> String {
-        let mut value: serde_json::Value =
-            serde_json::from_str(&super::super::runtime::test_support::schedule_payload_json(None))
-                .expect("the fixture payload must be JSON");
+    fn payload_with(
+        mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    ) -> String {
+        let mut value: serde_json::Value = serde_json::from_str(
+            &super::super::runtime::test_support::schedule_payload_json(None),
+        )
+        .expect("the fixture payload must be JSON");
         mutate(value.as_object_mut().expect("the payload is an object"));
         value.to_string()
     }
@@ -6917,7 +6977,7 @@ mod tests {
     /// `MISSING_TARIFF` — they would get a startup refusal saying this
     /// deployment did not publish this schedule, with nothing anywhere
     /// pointing at the misspelling. So `load` refuses, and the message names
-    /// the offending key and the four canonical names.
+    /// the offending key and the seven canonical names.
     ///
     /// This is also what the spec requires independently: action maps
     /// "contain exactly the four canonical actionType names"
@@ -6968,7 +7028,8 @@ mod tests {
 
         // Paired positive arm: the same file with the key spelled correctly
         // loads, so the refusal is about the typo and not about the fixture.
-        let ok = payload_with(|p| set_action_fee(p, ActionType::SponsoredEnrollment, Some("500000")));
+        let ok =
+            payload_with(|p| set_action_fee(p, ActionType::SponsoredEnrollment, Some("500000")));
         write_schedule(&path, &ok);
         assert_eq!(
             FeeSchedule::load(&path)
@@ -6980,7 +7041,7 @@ mod tests {
     }
 
     /// A key is missing from an action map altogether. Same refusal, opposite
-    /// half of `require_exact_action_map` — the spec's "exactly the four"
+    /// half of `require_exact_action_map` — the spec's exactness rule
     /// forbids omission as well as addition, and an omitted key would leave
     /// two payloads meaning the same schedule with different digests.
     ///
@@ -7017,7 +7078,7 @@ mod tests {
     /// `null` in `actionFeesRaw` means "no tariff set for this action" — the
     /// v2 replacement for v1's "omit the key".
     ///
-    /// The key cannot be omitted any more (the spec requires all four), and it
+    /// The key cannot be omitted any more (the schema requires all seven), and it
     /// must not carry `"0"` either: a zero is a parseable PRICE, and
     /// `models::fee_quote_struct_hash` would sign it verbatim into a
     /// payer-facing quote. `null` is the only encoding that is unmistakably
@@ -7190,7 +7251,11 @@ mod tests {
                 "0xDDc10602782af652bB913f7bdE1fD82981Db7dd9".into(),
                 "lowercase",
             ),
-            ("feeToken", "ddc10602782af652bb913f7bde1fd82981db7dd9".into(), "lowercase"),
+            (
+                "feeToken",
+                "ddc10602782af652bb913f7bde1fd82981db7dd9".into(),
+                "lowercase",
+            ),
         ];
         for (field, value, needle) in cases {
             write_schedule(
@@ -7291,9 +7356,12 @@ mod tests {
     fn fee_schedule_digest_covers_payload_values_not_file_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fee_schedule.json");
-        let payload = payload_with(|p| set_action_fee(p, ActionType::SponsoredEnrollment, Some("500000")));
+        let payload =
+            payload_with(|p| set_action_fee(p, ActionType::SponsoredEnrollment, Some("500000")));
         write_schedule(&path, &payload);
-        let baseline = FeeSchedule::load(&path).unwrap().computed_fee_schedule_hash();
+        let baseline = FeeSchedule::load(&path)
+            .unwrap()
+            .computed_fee_schedule_hash();
 
         // Same members, different order and whitespace, and a different note
         // — none of which is part of the payload's value.
@@ -7304,17 +7372,22 @@ mod tests {
         );
         fs::write(&path, reordered).unwrap();
         assert_eq!(
-            FeeSchedule::load(&path).unwrap().computed_fee_schedule_hash(),
+            FeeSchedule::load(&path)
+                .unwrap()
+                .computed_fee_schedule_hash(),
             baseline,
             "member order, whitespace and the operator note are not part of the digest"
         );
 
         // One digit of one tariff, and the digest must move. This is the edit
         // the previous design accepted in silence.
-        let bumped = payload_with(|p| set_action_fee(p, ActionType::SponsoredEnrollment, Some("500001")));
+        let bumped =
+            payload_with(|p| set_action_fee(p, ActionType::SponsoredEnrollment, Some("500001")));
         write_schedule(&path, &bumped);
         assert_ne!(
-            FeeSchedule::load(&path).unwrap().computed_fee_schedule_hash(),
+            FeeSchedule::load(&path)
+                .unwrap()
+                .computed_fee_schedule_hash(),
             baseline,
             "an edited tariff MUST change feeScheduleHash"
         );
@@ -7333,7 +7406,9 @@ mod tests {
         });
         write_schedule(&path, &ceiling);
         assert_ne!(
-            FeeSchedule::load(&path).unwrap().computed_fee_schedule_hash(),
+            FeeSchedule::load(&path)
+                .unwrap()
+                .computed_fee_schedule_hash(),
             baseline,
             "an edited gas ceiling MUST change feeScheduleHash"
         );
@@ -7365,7 +7440,9 @@ mod tests {
         let payload = super::super::runtime::test_support::schedule_payload_json(None);
         let hash = super::super::runtime::test_support::schedule_hash_hex(&payload);
         let body = |v: u64| {
-            format!(r#"{{"schemaVersion": {v}, "feeScheduleHash": "{hash}", "payload": {payload}}}"#)
+            format!(
+                r#"{{"schemaVersion": {v}, "feeScheduleHash": "{hash}", "payload": {payload}}}"#
+            )
         };
 
         fs::write(&path, body(3)).unwrap();
@@ -7562,7 +7639,7 @@ mod tests {
     /// signed verbatim into the EIP-712 `FeeQuote`
     /// (`models::fee_quote_struct_hash`), where nothing downstream could tell a
     /// placeholder price from a real one. The keys themselves cannot be
-    /// omitted, because the spec requires all four to be present.
+    /// omitted, because the schema requires all seven to be present.
     ///
     /// **What this test deliberately no longer asserts:** that the declared
     /// hash equals `keccak256("stream-g-fee-schedule-g1")`. That tag is a label,
@@ -7602,16 +7679,25 @@ mod tests {
         // 'm' (0x6D). That is not the order a human sorts those two by eye.
         const SHIPPED_CANONICAL_BYTES: &str = concat!(
             r#"{"actionFeesRaw":{"GOAT_STREAM_G_GOAT_TRANSFER_V1":null,"#,
+            r#""GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1":null,"#,
+            r#""GOAT_STREAM_G_PROXY_CLAIM_V1":null,"#,
+            r#""GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1":null,"#,
             r#""GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1":null,"#,
             r#""GOAT_STREAM_G_SPONSORED_SELL_V1":null,"#,
             r#""GOAT_STREAM_G_USDT_TRANSFER_V1":null},"#,
             r#""calldataByteCeilings":{"GOAT_STREAM_G_GOAT_TRANSFER_V1":"0","#,
+            r#""GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1":"0","#,
+            r#""GOAT_STREAM_G_PROXY_CLAIM_V1":"0","#,
+            r#""GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1":"0","#,
             r#""GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1":"0","#,
             r#""GOAT_STREAM_G_SPONSORED_SELL_V1":"0","#,
             r#""GOAT_STREAM_G_USDT_TRANSFER_V1":"0"},"#,
             r#""chainId":"31337","decimals":"6","#,
             r#""feeToken":"0xddc10602782af652bb913f7bde1fd82981db7dd9","#,
             r#""gasUnitCeilings":{"GOAT_STREAM_G_GOAT_TRANSFER_V1":"0","#,
+            r#""GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1":"0","#,
+            r#""GOAT_STREAM_G_PROXY_CLAIM_V1":"0","#,
+            r#""GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1":"0","#,
             r#""GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1":"0","#,
             r#""GOAT_STREAM_G_SPONSORED_SELL_V1":"0","#,
             r#""GOAT_STREAM_G_USDT_TRANSFER_V1":"0"},"#,
@@ -7627,7 +7713,7 @@ mod tests {
         );
         assert_eq!(
             SHIPPED_CANONICAL_BYTES.len(),
-            728,
+            1100,
             "canonical byte length is part of the fixture"
         );
 
@@ -7638,7 +7724,7 @@ mod tests {
         // as hex — so it is not merely self-consistent with our own
         // tiny-keccak call.
         const SHIPPED_FEE_SCHEDULE_HASH: &str =
-            "1c663d43fccc550dd95ef9dcd469eb12ac98006d355fea4ce9fcdc002ff8d952";
+            "2681f70d84c3a644290b622f42fc1fa6977c66da4343213f9967c8204ad91bf2";
         assert_eq!(
             hex::encode(schedule.computed_fee_schedule_hash()),
             SHIPPED_FEE_SCHEDULE_HASH,
@@ -7657,6 +7743,9 @@ mod tests {
             ActionType::SponsoredSell,
             ActionType::GoatTransfer,
             ActionType::UsdtTransfer,
+            ActionType::ProxyClaim,
+            ActionType::ProxyProposeBatch,
+            ActionType::ProxyChallengeBatch,
         ] {
             let err = match schedule.fee_for(action) {
                 Ok(amount) => panic!(
@@ -7719,8 +7808,8 @@ mod tests {
             .expect("the shipped payload must canonicalise");
         assert_eq!(
             bytes.len(),
-            728,
-            "the ops leg must produce the same 728 canonical bytes the Rust and JavaScript \
+            1100,
+            "the ops leg must produce the same 1100 canonical bytes the Rust and JavaScript \
              fixtures pin"
         );
 
@@ -7733,7 +7822,7 @@ mod tests {
         );
         assert_eq!(
             hex::encode(crate::merkle::keccak256(&bytes)),
-            "1c663d43fccc550dd95ef9dcd469eb12ac98006d355fea4ce9fcdc002ff8d952",
+            "2681f70d84c3a644290b622f42fc1fa6977c66da4343213f9967c8204ad91bf2",
             "the value an operator publishes as STREAM_G_FEE_SCHEDULE_HASH"
         );
 
@@ -7750,8 +7839,9 @@ mod tests {
         );
 
         // Routed through `crate::canonical_bytes`, so its refusals apply.
-        let err = super::canonical_schedule_payload_bytes(r#"{"payload":{"chainId":31337}}"#, "<test>")
-            .expect_err("a JSON number is unhashable on both sides of the parity pair");
+        let err =
+            super::canonical_schedule_payload_bytes(r#"{"payload":{"chainId":31337}}"#, "<test>")
+                .expect_err("a JSON number is unhashable on both sides of the parity pair");
         assert!(
             format!("{err}").contains("JSON number at $.chainId"),
             "unexpected: {err}"

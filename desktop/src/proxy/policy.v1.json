@@ -1,0 +1,26 @@
+{
+  "policy_version": 1,
+  "paragraphs": [
+    { "heading": "", "body": "This is separate from everything else in D.A. G.O.A.T. Turning it on changes nothing about your Contribute settings, and leaving it off limits no other part of the app." },
+    { "heading": "What you are switching on", "body": "Your computer fetches web pages on behalf of other people and sends the results back. Those requests leave your home internet connection." },
+    { "heading": "Websites see your home address, not ours", "body": "Every site contacted this way records your household's IP address as the source of the request. Nothing points it at us instead of you." },
+    { "heading": "Your internet provider may cancel your account", "body": "Most residential provider agreements forbid relaying other people's traffic. Enforcement is usually suspension or cancellation, with no appeal." },
+    { "heading": "Your household may be locked out of ordinary websites", "body": "Addresses seen relaying traffic get added to proxy-detection lists. The result is repeated CAPTCHAs, streaming services refusing to play, and bank or shopping sites blocking sign-in, on every device in your home, including phones and consoles that never ran this app. That can outlast uninstalling." },
+    { "heading": "Police may contact the subscriber at this address", "body": "An IP address is the only identifier a site keeps. If a request made through your connection is investigated, it is traced to whoever pays for the line at this address." },
+    { "heading": "What is recorded", "body": "Only the allowlist entry contacted, the address it resolved to, and byte counts. No page contents, no paths, and no search terms are stored anywhere." },
+    { "heading": "The destination allowlist is fixed and inspectable", "body": "Requests can only reach the destinations listed on this screen. Everything else is refused before a socket opens, including addresses inside your own home network. The fingerprint of that list is part of what you sign." },
+    { "heading": "Caps and hours are held by the background process", "body": "Your daily limit, speed limit, and time window are enforced by the background process, not by this window. Closing D.A. G.O.A.T. does not lift them." },
+    { "heading": "Off until you sign, one click to stop", "body": "This stays off until you sign the record below. Switching it off halts traffic within five seconds." },
+    { "heading": "You re-confirm every 90 days", "body": "The signed record expires after 90 days, and immediately whenever this text or the allowlist changes. Traffic stops until you read the new text and sign again." },
+    { "heading": "", "body": "No GOAT is created by this. Nothing here is a promise of payment, and testnet GOAT has no monetary value." }
+  ],
+  "accept_label": "Sign and turn on",
+  "decline_label": "Not now",
+  "allowlist": [
+    { "id": "crossref-api", "host": "api.crossref.org", "note": "Public scholarly metadata" },
+    { "id": "openalex-api", "host": "api.openalex.org", "note": "Public scholarly metadata" },
+    { "id": "datacite-api", "host": "api.datacite.org", "note": "Public dataset metadata" },
+    { "id": "europepmc-api", "host": "www.ebi.ac.uk", "note": "Public life-science literature index" },
+    { "id": "rcsb-files", "host": "files.rcsb.org", "note": "Public protein structure files" }
+  ]
+}

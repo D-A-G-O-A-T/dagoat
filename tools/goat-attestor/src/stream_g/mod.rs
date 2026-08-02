@@ -1304,8 +1304,7 @@ mod tests {
         // mirror of `SponsoredEnrollmentCall` (quote inline, nothing derived)
         // clears this limit compact by a margin thinner than one signature,
         // and does not clear it at all once indented.
-        let mirror =
-            crate::stream_g::http_error::max_submit_request_json_with_inline_quote();
+        let mirror = crate::stream_g::http_error::max_submit_request_json_with_inline_quote();
         let mirror_pretty = serde_json::to_string_pretty(
             &serde_json::from_str::<serde_json::Value>(&mirror).unwrap(),
         )

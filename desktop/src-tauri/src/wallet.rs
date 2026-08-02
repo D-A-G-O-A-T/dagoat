@@ -637,6 +637,20 @@ pub async fn wallet_lock(state: tauri::State<'_, WalletState>) -> Result<(), Str
     Ok(())
 }
 
+/// The address of the wallet THIS PROCESS currently holds unlocked, if any.
+///
+/// Used by the bandwidth consent gate as the expected operator address. It is resolved
+/// here and never taken from the webview: a check whose expected value the caller
+/// supplies is self-referential, and "is this blob self-consistent?" is a question
+/// every self-signed blob answers yes to.
+pub(crate) fn active_address(state: &WalletState) -> Option<String> {
+    state
+        .active
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|m| m.address.clone()))
+}
+
 #[tauri::command]
 pub async fn wallet_active(
     state: tauri::State<'_, WalletState>,

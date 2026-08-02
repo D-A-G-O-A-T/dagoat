@@ -26,11 +26,23 @@ library StreamGTypes {
     // Action type constants (design §6.2)
     // -------------------------------------------------------------------------
 
-    bytes32 internal constant ACTION_SPONSORED_ENROLLMENT =
-        keccak256("GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1");
+    bytes32 internal constant ACTION_SPONSORED_ENROLLMENT = keccak256("GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1");
     bytes32 internal constant ACTION_SPONSORED_SELL = keccak256("GOAT_STREAM_G_SPONSORED_SELL_V1");
     bytes32 internal constant ACTION_GOAT_TRANSFER = keccak256("GOAT_STREAM_G_GOAT_TRANSFER_V1");
     bytes32 internal constant ACTION_USDT_TRANSFER = keccak256("GOAT_STREAM_G_USDT_TRANSFER_V1");
+
+    // Residential-proxy settlement action types. These reserve the tariff keys
+    // and the gateway nonce namespace for the three ProxyRevenueSettlement
+    // entrypoints a relayer could route. NOTE, precisely: the gateway has no
+    // execute* entrypoint for any of them today, so recognising them widens
+    // nothing except `nonceSnapshot`. Two of the three are also not sponsorable
+    // as ProxyRevenueSettlement is written -- `proposeBatch` is publisher-only
+    // and both it and `challengeBatch` take a native-ETH bond from msg.sender,
+    // which is the thing a USDT gas-abstraction relayer exists to avoid. Only
+    // `claim` credits an operator parameter rather than msg.sender.
+    bytes32 internal constant ACTION_PROXY_CLAIM = keccak256("GOAT_STREAM_G_PROXY_CLAIM_V1");
+    bytes32 internal constant ACTION_PROXY_PROPOSE_BATCH = keccak256("GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1");
+    bytes32 internal constant ACTION_PROXY_CHALLENGE_BATCH = keccak256("GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1");
 
     // -------------------------------------------------------------------------
     // Canonical TYPEHASH constants (design §6.9 + action cores + FeeTokenConfig)
@@ -92,9 +104,8 @@ library StreamGTypes {
     );
 
     // Canonical EIP-2612 Permit (token-native; domain is the token's).
-    bytes32 internal constant EIP2612_PERMIT_TYPEHASH = keccak256(
-        "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
-    );
+    bytes32 internal constant EIP2612_PERMIT_TYPEHASH =
+        keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
 
     // Canonical EIP-3009 ReceiveWithAuthorization (token-native).
     bytes32 internal constant EIP3009_RECEIVE_WITH_AUTHORIZATION_TYPEHASH = keccak256(

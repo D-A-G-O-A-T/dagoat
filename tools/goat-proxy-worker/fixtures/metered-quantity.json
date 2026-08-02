@@ -1,0 +1,11 @@
+{
+  "schema_id": "GOAT_PROXY_METERED_QUANTITY_V1",
+  "metered_quantity": "body_bytes_to_consumer",
+  "note": "The one quantity both counters observe: response body octets, after HTTP framing is stripped and chunked transfer-encoding is decoded, as they cross into the tunnel. The node counts them in SessionMeter::observe; the gateway counts them as TunnelMeterRecord.to_consumer. Both processes read this file and must pin the same number, because the epoch challenger compares them at exact equality with no tolerance. origin_socket_bytes is the WRONG seam, recorded here as a negative control so a meter that drifts back onto the socket is caught by a red test instead of by a forfeited bond.",
+  "chunk_sizes": ["4096", "4096", "1337"],
+  "chunk_framing_bytes": "28",
+  "response_head_bytes": "137",
+  "body_bytes_to_consumer": "9529",
+  "gateway_to_consumer": "9529",
+  "origin_socket_bytes": "9694"
+}

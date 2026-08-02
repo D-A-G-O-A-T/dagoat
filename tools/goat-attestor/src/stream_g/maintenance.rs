@@ -689,15 +689,8 @@ async fn scan_and_fold(
     let mut quarantined = 0usize;
     let mut stalled = 0usize;
     for log in &logs {
-        match reconcile::reconcile_executed_log(
-            store,
-            data_key_hex,
-            chain,
-            finality,
-            log,
-            now_wall,
-        )
-        .await
+        match reconcile::reconcile_executed_log(store, data_key_hex, chain, finality, log, now_wall)
+            .await
         {
             Ok(outcome) => {
                 metrics.record_log_outcome(&outcome);
@@ -3096,7 +3089,9 @@ mod tests {
             "{ok:?}"
         );
         assert_eq!(
-            scalar_text(state.store(), ATTEMPT_STATUS_SQL, attempt.attempt_id).await.as_deref(),
+            scalar_text(state.store(), ATTEMPT_STATUS_SQL, attempt.attempt_id)
+                .await
+                .as_deref(),
             Some(TX_ATTEMPT_STATUS_CONFIRMED)
         );
     }
@@ -3365,13 +3360,9 @@ mod tests {
             "the two attempts must contend for ONE row — that reuse is the hazard"
         );
         assert_eq!(
-            scalar_text(
-                state.store(),
-                NONCE_STATUS_SQL,
-                first.allocation_id.clone()
-            )
-            .await
-            .as_deref(),
+            scalar_text(state.store(), NONCE_STATUS_SQL, first.allocation_id.clone())
+                .await
+                .as_deref(),
             Some(NONCE_STATUS_ALLOCATED),
             "paired non-zero arm: the row really is live again before the fold runs"
         );
@@ -3388,7 +3379,10 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(outcome, ReconcileStepOutcome::Scanned { quarantined: 0, .. }),
+            matches!(
+                outcome,
+                ReconcileStepOutcome::Scanned { quarantined: 0, .. }
+            ),
             "the fold itself must succeed; only the nonce transition is refused: {outcome:?}"
         );
 
@@ -3400,13 +3394,9 @@ mod tests {
             "the confirmation itself is still recorded"
         );
         assert_eq!(
-            scalar_text(
-                state.store(),
-                NONCE_STATUS_SQL,
-                first.allocation_id.clone()
-            )
-            .await
-            .as_deref(),
+            scalar_text(state.store(), NONCE_STATUS_SQL, first.allocation_id.clone())
+                .await
+                .as_deref(),
             Some(NONCE_STATUS_ALLOCATED),
             "the slot belongs to the live replacement attempt and must NOT be stamped consumed by \
              a fold for the attempt that gave it up"

@@ -17,7 +17,7 @@ contract DeployStreamGTest is Test {
     /// Pinned on the Rust side, over the real file, by
     /// `tools/goat-attestor/src/stream_g/quotes.rs`'s
     /// `shipped_placeholder_fee_schedule_is_published_and_serves_no_price`
-    /// (which also pins the 728 canonical bytes it is taken over).
+    /// (which also pins the 1100 canonical bytes it is taken over).
     ///
     /// It replaced `keccak256("stream-g-fee-schedule-g1")`. That was a label,
     /// and no schedule payload hashes to it; `test_writes_only_31337_stream_g_json`
@@ -27,7 +27,7 @@ contract DeployStreamGTest is Test {
     /// restore it into that artifact and `goat-attestor` would refuse to start
     /// against the lab deployment.
     bytes32 internal constant SHIPPED_FEE_SCHEDULE_HASH =
-        0x1c663d43fccc550dd95ef9dcd469eb12ac98006d355fea4ce9fcdc002ff8d952;
+        0x2681f70d84c3a644290b622f42fc1fa6977c66da4343213f9967c8204ad91bf2;
 
     /// The digest of the deployment payload this repo ships,
     /// `tools/goat-attestor/fixtures/stream_g_deployment_payload.json`:
@@ -53,7 +53,7 @@ contract DeployStreamGTest is Test {
     /// `DeploymentManifestHashSelfMismatch` -- which is the point, and is how
     /// an operator learns the payload moved.
     bytes32 internal constant SHIPPED_DEPLOYMENT_MANIFEST_HASH =
-        0x05f8b33ddff7855f64c5f38553cadea8648f5d1889ca17624a59f9f507d26491;
+        0xd888dfcea8b9ad292dab408ae0a81e84752506668d813aff10ea901e44c8a65f;
 
     DeployStreamG internal deployer;
 
@@ -198,12 +198,7 @@ contract DeployStreamGTest is Test {
     /// create, read or delete that path.
     function _scratchDeploymentsDir(string memory testName) internal returns (string memory dir) {
         dir = string.concat(
-            "./deployments/.streamg-t-",
-            testName,
-            "-",
-            vm.toString(vm.unixTime()),
-            "-",
-            vm.toString(vm.randomUint(32))
+            "./deployments/.streamg-t-", testName, "-", vm.toString(vm.unixTime()), "-", vm.toString(vm.randomUint(32))
         );
         // A name that has never existed cannot be stale, so there is nothing to
         // clear first -- which is the whole point of generating one.
@@ -359,20 +354,13 @@ contract DeployStreamGTest is Test {
 
         // The four committed roles, address AND live code hash.
         assertEq(vm.parseJsonAddress(raw, ".payload.contracts.GATEWAY.address"), d.goatRelayGateway);
-        assertEq(
-            vm.parseJsonBytes32(raw, ".payload.contracts.GATEWAY.runtimeCodeHash"),
-            d.goatRelayGateway.codehash
-        );
-        assertEq(
-            vm.parseJsonAddress(raw, ".payload.contracts.FEE_TOKEN_REGISTRY.address"), d.feeTokenRegistry
-        );
+        assertEq(vm.parseJsonBytes32(raw, ".payload.contracts.GATEWAY.runtimeCodeHash"), d.goatRelayGateway.codehash);
+        assertEq(vm.parseJsonAddress(raw, ".payload.contracts.FEE_TOKEN_REGISTRY.address"), d.feeTokenRegistry);
         assertEq(
             vm.parseJsonBytes32(raw, ".payload.contracts.FEE_TOKEN_REGISTRY.runtimeCodeHash"),
             d.feeTokenRegistry.codehash
         );
-        assertEq(
-            vm.parseJsonAddress(raw, ".payload.contracts.SPONSORED_BUY_DESK.address"), d.sponsoredBuyDesk
-        );
+        assertEq(vm.parseJsonAddress(raw, ".payload.contracts.SPONSORED_BUY_DESK.address"), d.sponsoredBuyDesk);
         assertEq(
             vm.parseJsonBytes32(raw, ".payload.contracts.SPONSORED_BUY_DESK.runtimeCodeHash"),
             d.sponsoredBuyDesk.codehash
@@ -403,9 +391,7 @@ contract DeployStreamGTest is Test {
         // clean four times out of four against an artifact with `quoteSigner`,
         // `goatCoin`, `policySafe` or `enrollmentRegistry` edited by one nibble.
         assertEq(vm.parseJsonAddress(raw, ".payload.accounts.DESK_OWNER"), d.deskOwner);
-        assertEq(
-            vm.parseJsonAddress(raw, ".payload.accounts.ENROLLMENT_REGISTRY"), d.enrollmentRegistry
-        );
+        assertEq(vm.parseJsonAddress(raw, ".payload.accounts.ENROLLMENT_REGISTRY"), d.enrollmentRegistry);
         assertEq(vm.parseJsonAddress(raw, ".payload.accounts.FEE_SAFE"), d.feeSafe);
         assertEq(vm.parseJsonAddress(raw, ".payload.accounts.FEE_TOKEN"), d.feeToken);
         assertEq(vm.parseJsonAddress(raw, ".payload.accounts.GOAT_COIN"), d.goatCoin);
@@ -423,10 +409,7 @@ contract DeployStreamGTest is Test {
             vm.parseJsonString(raw, ".payload.contracts.GATEWAY.address"),
             vm.toLowercase(vm.toString(d.goatRelayGateway))
         );
-        assertEq(
-            vm.parseJsonString(raw, ".payload.accounts.QUOTE_SIGNER"),
-            vm.toLowercase(vm.toString(d.quoteSigner))
-        );
+        assertEq(vm.parseJsonString(raw, ".payload.accounts.QUOTE_SIGNER"), vm.toLowercase(vm.toString(d.quoteSigner)));
 
         // The injection routed BOTH documents, not just the one read above.
         // `writeManifest` publishes the flat manifest and the payload together,

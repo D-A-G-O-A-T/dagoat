@@ -1,0 +1,79 @@
+[package]
+name = "goat-proxy-tunnel"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "GOAT residential proxy tunnel: an outbound-only WSS carriage whose payload is a post-quantum channel wrapping the frozen SecureChannel."
+
+# Standalone package (not a member of the repo root workspace).
+#
+# R1 evidence, four reasons, recorded here so the placement is not re-litigated:
+#   1. `Dockerfile:18-19` copies only `Cargo.toml`/`Cargo.lock` and `src` into the
+#      image, so the deploy spine is the root package and nothing else.
+#   2. `.dockerignore:6-7` excludes `goatcoin-rs/` and `reference/` from the build
+#      context entirely.
+#   3. `ARCHITECTURE_CONVERGENCE.md` types the `goatcoin-rs/` modules ORACLE,
+#      "Never shipped" — a shipped tunnel cannot live in a tree that by
+#      construction is never shipped.
+#   4. `goatcoin-rs/crates/goat-backends` has no `[[bin]]` and carries no async
+#      dependency, so it cannot host a tokio carriage either.
+# Hence: own manifest, own `[workspace]`, own CI job, own publication rows. The
+# `license` field above is what the attestor's licence audit requires of every
+# published manifest.
+[workspace]
+
+[lib]
+name = "goat_proxy_tunnel"
+path = "src/lib.rs"
+
+[features]
+# The gateway's scheduling stub. OFF by default and deliberately so: the node
+# has no business holding the gateway's scheduling state, and a node binary
+# that links it is a node binary that could be talked into acting like one.
+# CI must run the suite BOTH ways — `cargo test` and `cargo test --features
+# gateway` — or the scheduler's tests never run anywhere.
+gateway = []
+
+[dependencies]
+# The FROZEN trait surface. Consumed and wrapped; never altered.
+goat-core = { path = "../.." }
+
+# Inner (load-bearing) post-quantum crypto — same crates and same versions as the
+# spine's host backend, so the two cannot drift on primitive choice.
+aes-gcm = "0.11.0"                                        # AES-256-GCM AEAD framing
+ml-kem = { version = "0.3.2", features = ["getrandom"] }  # FIPS 203 ML-KEM-768
+ml-dsa = "0.1.1"                                          # FIPS 204 ML-DSA-65
+sha3 = "0.10"                                             # SHA3-256 session KDF
+
+thiserror = "1"
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "sync",
+    "time",
+    "io-util",
+] }
+# Outer carriage. DUMB carriage only: NAT/CGNAT traversal on 443, never the trust
+# boundary. `connect` is the outbound-dial half of the crate; the accept/listen
+# half (`handshake` server side) is deliberately not enabled.
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
+    "connect",
+    "rustls-tls-webpki-roots",
+] }
+# `tokio-tungstenite` declares rustls with `default-features = false`, which
+# selects NO crypto provider. Naming `ring` here is what makes the choice
+# explicit and single-valued: rustls 0.23 refuses to pick a default when zero or
+# two providers are compiled in.
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
+] }
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }

@@ -419,7 +419,9 @@ fn walk_published_tree(repo: &Path, dir: &Path, out: &mut Vec<String>) {
 /// digits, for the same reason the marker table is assembled at runtime: this
 /// file is inside the swept set and a literal example would make the sweep
 /// flag its own documentation.
-const DOC_KIND_WORDS: &[&str] = &["spec", "specs", "plan", "plans", "design", "report", "brief"];
+const DOC_KIND_WORDS: &[&str] = &[
+    "spec", "specs", "plan", "plans", "design", "report", "brief",
+];
 
 /// Collapse a source file into one line of prose with comment leaders removed,
 /// so a citation that wraps across two comment lines is still one string.
@@ -466,7 +468,9 @@ fn normalize_title(s: &str) -> String {
     // Em dash and en dash in one pass, THEN the ASCII double hyphen. The order
     // matters and the two calls cannot merge: the first maps single characters,
     // the second collapses a two-character sequence that the first can produce.
-    let dashed = de_bold.replace(['\u{2014}', '\u{2013}'], "-").replace("--", "-");
+    let dashed = de_bold
+        .replace(['\u{2014}', '\u{2013}'], "-")
+        .replace("--", "-");
     dashed
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -522,7 +526,9 @@ fn contains_word(hay: &str, word: &str) -> bool {
 
 /// First char boundary at or after `from`, never past `limit`.
 fn snap_up(s: &str, from: usize, limit: usize) -> usize {
-    (from..=limit).find(|k| s.is_char_boundary(*k)).unwrap_or(limit)
+    (from..=limit)
+        .find(|k| s.is_char_boundary(*k))
+        .unwrap_or(limit)
 }
 
 /// Last char boundary at or before `from`, never before `limit`.
@@ -777,12 +783,17 @@ mod tests {
 
     /// Floor on how many text files a sweep must actually read.
     ///
-    /// Measured 409 today (566 candidates, 157 of them binary — the `brand/`
-    /// and `desktop/` image assets). The six walk roots contribute 129 on
-    /// their own, so any bound at or below that would pass even with the
-    /// export baseline entirely disconnected, which is the exact failure this
-    /// guard exists to catch. 350 sits between the two.
-    const MIN_SWEPT_TEXT_FILES: usize = 350;
+    /// Measured **488 of 645** candidates today (157 skipped as binary — the
+    /// `brand/` and `desktop/` image assets). It was 409 of 566 when this floor
+    /// was first written, 469 of 626 before this raise, and it rose by exactly
+    /// 19 when `tools/goat-proxy-worker`'s nineteen rows entered the baseline,
+    /// as 15 rows earlier put `tools/goat-proxy-tunnel` in scope. The six walk
+    /// roots contribute 129 on their own, so any bound at or below that would
+    /// pass even with the export baseline entirely disconnected, which is the
+    /// exact failure this guard exists to catch. 384 sits between the two, and
+    /// it is raised with the baseline rather than left where a shrinking export
+    /// could quietly meet it.
+    const MIN_SWEPT_TEXT_FILES: usize = 384;
 
     /// Files that MUST be in the swept set, one per exported surface the sweep
     /// has to reach, named individually so a scope regression fails loudly
@@ -805,6 +816,17 @@ mod tests {
     /// * `tools/goat-attestor/src/rpc_chain.rs` — the crate file that DID fail
     ///   under the old scope. It stays on this list so the sweep can never be
     ///   narrowed to nothing at all.
+    /// * `tools/goat-proxy-tunnel/src/lib.rs` — the first file published from a
+    ///   SECOND standalone crate under `tools/`, added with that crate's
+    ///   fifteen baseline rows. It reaches the sweep only through the export
+    ///   baseline: no walk root contains it, so if the baseline half ever stops
+    ///   contributing, this entry is what says so out loud instead of the
+    ///   fifteen files quietly leaving scope.
+    /// * `tools/goat-proxy-worker/src/policy.rs` — the same, for the THIRD
+    ///   standalone crate under `tools/` and its nineteen baseline rows. The
+    ///   largest source file in that crate, chosen deliberately: it is the one
+    ///   most likely to acquire a design-authority pointer, and like the tunnel
+    ///   it reaches the sweep only through the baseline.
     const REQUIRED_SWEEP_COVERAGE: &[&str] = &[
         "desktop/src/chain/abis.js",
         "desktop/src-tauri/src/wallet.rs",
@@ -812,6 +834,8 @@ mod tests {
         "contracts/README.md",
         "README.md",
         "tools/goat-attestor/src/rpc_chain.rs",
+        "tools/goat-proxy-tunnel/src/lib.rs",
+        "tools/goat-proxy-worker/src/policy.rs",
     ];
 
     /// Every file [`no_internal_doc_tree_path_citations`] reads, as
@@ -1206,8 +1230,9 @@ mod tests {
                 .lines()
                 .find_map(|l| l.strip_prefix("# ").map(str::trim))
             else {
-                index_failures
-                    .push(format!("row {title:?} -> {path} : the document has no H1 heading"));
+                index_failures.push(format!(
+                    "row {title:?} -> {path} : the document has no H1 heading"
+                ));
                 continue;
             };
             let want = normalize_title(title);

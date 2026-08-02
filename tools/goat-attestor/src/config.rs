@@ -61,6 +61,10 @@ pub struct Config {
     /// doc. Disabled by default (`STREAM_G_ENABLED=0`); fail-closed
     /// validation (`build_stream_g_config`) only engages when enabled.
     pub stream_g: StreamGConfig,
+    /// Fetch-network revenue lane (TARGET/design) config — see [`ProxyConfig`].
+    /// Disabled by default (`PROXY_ENABLED` absent); unlike Stream G, **every**
+    /// band is validated even while disabled.
+    pub proxy: ProxyConfig,
 }
 
 /// Stream G (TARGET/post-pilot) config. `enabled` is false unless
@@ -637,6 +641,393 @@ fn build_stream_g_config(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Fetch-network revenue lane (TARGET/design) configuration.
+// ---------------------------------------------------------------------------
+
+/// Turn the lane on. Absent or falsey → off, which is the shipped default.
+pub const ENV_PROXY_ENABLED: &str = "PROXY_ENABLED";
+/// Deployed `ProxyRevenueSettlement` address.
+pub const ENV_PROXY_SETTLEMENT_ADDRESS: &str = "PROXY_SETTLEMENT_ADDRESS";
+/// Deployed `ProxyConsumerRegistry` address.
+pub const ENV_PROXY_CONSUMER_REGISTRY_ADDRESS: &str = "PROXY_CONSUMER_REGISTRY_ADDRESS";
+/// The gateway's identifier, as a 0x-prefixed 32-byte hex word.
+pub const ENV_PROXY_GATEWAY_ID: &str = "PROXY_GATEWAY_ID";
+/// Where the gateway's signed meter commitment is retrieved from, independently
+/// of whoever proposes the epoch.
+pub const ENV_PROXY_METER_ENDPOINT: &str = "PROXY_METER_ENDPOINT";
+/// Chain id every EIP-712 digest in this lane binds. See
+/// [`ProxyConfig::chain_id`] for the one case in which it is inferred.
+pub const ENV_PROXY_CHAIN_ID: &str = "PROXY_CHAIN_ID";
+/// Verifying contract every EIP-712 digest in this lane binds. Defaults to
+/// [`ENV_PROXY_SETTLEMENT_ADDRESS`].
+pub const ENV_PROXY_VERIFYING_CONTRACT: &str = "PROXY_VERIFYING_CONTRACT";
+/// Off-chain protocol take, in basis points. Band-checked; never clamped.
+pub const ENV_PROXY_PROTOCOL_TAKE_BPS: &str = "PROXY_PROTOCOL_TAKE_BPS";
+/// Per-epoch byte ceiling. Band-checked; never clamped.
+pub const ENV_PROXY_EPOCH_BYTE_CEILING: &str = "PROXY_EPOCH_BYTE_CEILING";
+/// Per-`(consumer, operator)` concentration cap, in basis points. Band-checked.
+pub const ENV_PROXY_PAIR_CONCENTRATION_BPS: &str = "PROXY_PAIR_CONCENTRATION_BPS";
+/// Price applied to metered bytes, in wei per mebibyte. Band-checked.
+pub const ENV_PROXY_PRICE_GOAT_WEI_PER_MEBIBYTE: &str = "PROXY_PRICE_GOAT_WEI_PER_MEBIBYTE";
+/// Digest of the curated allowlist manifest every receipt is bound to.
+pub const ENV_PROXY_ALLOWLIST_MANIFEST_DIGEST: &str = "PROXY_ALLOWLIST_MANIFEST_DIGEST";
+/// Minimum spacing between gateway meter requests, in ms. **Clamped.**
+pub const ENV_PROXY_METER_MIN_REQUEST_INTERVAL_MS: &str = "PROXY_METER_MIN_REQUEST_INTERVAL_MS";
+/// Receipt rows read per page. **Clamped.**
+pub const ENV_PROXY_RECEIPT_PAGE_SIZE: &str = "PROXY_RECEIPT_PAGE_SIZE";
+
+/// Default protocol take.
+///
+/// Deliberately **not** a literal: it is the top of the launch band, and the
+/// same number is compiled into the deployed settlement contract as an
+/// immutable. `the_configured_take_equals_the_deployed_take` reads the deployed
+/// value back out of the deployment record and asserts the two agree, so a
+/// second literal here would be a second thing to keep in step.
+pub const DEFAULT_PROXY_TAKE_BPS: u32 = crate::proxy::MAX_TAKE_BPS;
+
+/// Default per-`(consumer, operator)` concentration cap — 50%.
+///
+/// 🔴 **A STARTING VALUE PENDING FOUNDER REVIEW**, in the same sense as
+/// [`BroadcastGasPolicy::starting_values_pending_founder_review`]: no ratified
+/// figure exists. It is set below [`crate::proxy::MAX_PAIR_CONCENTRATION_BPS`]
+/// on purpose — a default of "no cap" would ship the control switched off while
+/// looking configured, which is the failure mode this lane's config policy
+/// exists to prevent.
+pub const DEFAULT_PROXY_PAIR_CONCENTRATION_BPS: u32 = 5_000;
+
+/// Default price applied to metered bytes, in wei per mebibyte.
+///
+/// 🔴 **A STARTING VALUE PENDING FOUNDER REVIEW.** No price has been ratified
+/// for this lane and none is claimed here; this is a syntactically valid,
+/// in-band, non-zero figure so the band check has something to check. The lane
+/// is off by default, so nothing reads it until an operator turns it on — at
+/// which point setting it deliberately is their decision, not this file's.
+pub const DEFAULT_PROXY_PRICE_GOAT_WEI_PER_MEBIBYTE: u128 = 1_000_000_000_000;
+
+/// Fetch-network revenue lane config. `enabled` is false unless
+/// [`ENV_PROXY_ENABLED`] is explicitly truthy.
+///
+/// **Validation is unconditional.** Every band below is checked during
+/// `load_from_map` whether or not the lane is enabled, exactly like the
+/// `STREAM_G_*` numerics. A disabled lane carrying a take of 40% or a chain id
+/// that names no deployment is not a saving, it is a landmine that arms itself
+/// the day somebody flips the flag. Only *mounting* the lane's HTTP surface is
+/// conditional on `enabled`.
+///
+/// Which knobs refuse and which clamp is stated per band in the
+/// [`crate::proxy`] module doc, and pinned by
+/// `proxy_money_knobs_reject_and_throughput_knobs_clamp`.
+///
+/// There is **no tolerance knob and no chunk-size knob** in this struct, and
+/// `the_proxy_config_exposes_no_tolerance_and_no_chunk_size_knob` asserts their
+/// absence by reflection rather than by inspection. A configurable tolerance is
+/// an inflation budget with a published size; a configurable chunk size is a
+/// configurable receipt count, and receipt count is an anti-fraud surface.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProxyConfig {
+    pub enabled: bool,
+    /// Deployed `ProxyRevenueSettlement`. Required when `enabled`.
+    pub settlement_address: Option<String>,
+    /// Deployed `ProxyConsumerRegistry`. Required when `enabled`.
+    pub consumer_registry_address: Option<String>,
+    /// 0x-prefixed 32-byte hex. Required when `enabled` — a lane that cannot
+    /// name the gateway cannot check a witness signature, so an enabled lane
+    /// without it verifies two of three parties and reports success.
+    pub gateway_id: Option<String>,
+    /// `http(s)://` origin the gateway's signed meter commitment is fetched
+    /// from. Required when `enabled`.
+    pub meter_endpoint: Option<String>,
+    /// The chain id this lane's EIP-712 digests bind, once resolved.
+    ///
+    /// `PROXY_CHAIN_ID` wins when set. Otherwise the top-level `CHAIN_ID` is
+    /// inherited — and this is where the one deliberate exemption lives:
+    ///
+    /// * lane **on** → the inherited id is adopted and checked. A lane running
+    ///   on a chain with no deployment is a refusal.
+    /// * lane **off**, inherited id **in** [`crate::proxy::PROXY_CHAIN_ALLOWLIST`]
+    ///   → adopted and checked, so a latent bad value cannot hide behind the flag.
+    /// * lane **off**, inherited id **outside** the allowlist → `None`, and NOT
+    ///   a refusal.
+    ///
+    /// That last arm is the exemption and it is narrow on purpose. The blanket
+    /// rule would be "any chain id outside the allowlist fails startup", which
+    /// reads well until you notice it is a rule about a value the operator
+    /// never set for this lane: it would make the whole daemon refuse to start
+    /// on any chain this lane has no deployment for, including the chain ids
+    /// this crate's own signer tests already use, purely because a lane nobody
+    /// enabled has no home there. `None` says exactly that and nothing else,
+    /// and [`ProxyConfig::validate`] still refuses `None` when `enabled`.
+    pub chain_id: Option<u64>,
+    /// Verifying contract every EIP-712 digest binds. Defaults to
+    /// [`ProxyConfig::settlement_address`].
+    pub verifying_contract: Option<String>,
+    /// **Refused** outside [`crate::proxy::MIN_TAKE_BPS`] ..=
+    /// [`crate::proxy::MAX_TAKE_BPS`].
+    pub protocol_take_bps: u32,
+    /// **Refused** outside [`crate::proxy::MIN_EPOCH_BYTE_CEILING`] ..=
+    /// [`crate::proxy::MAX_EPOCH_BYTE_CEILING`].
+    pub epoch_byte_ceiling: u64,
+    /// **Refused** outside [`crate::proxy::MIN_PAIR_CONCENTRATION_BPS`] ..=
+    /// [`crate::proxy::MAX_PAIR_CONCENTRATION_BPS`].
+    pub pair_concentration_bps: u32,
+    /// **Refused** outside [`crate::proxy::MIN_PRICE_GOAT_WEI_PER_MEBIBYTE`]
+    /// ..= [`crate::proxy::MAX_PRICE_GOAT_WEI_PER_MEBIBYTE`].
+    ///
+    /// Serialised as a decimal string, not a JSON number: this lane's canonical
+    /// encoder refuses JSON numbers outright, and a config dump that disagreed
+    /// with the receipt encoding on how an integer looks would be a second
+    /// convention to keep in step.
+    #[serde(serialize_with = "serialize_u128_as_decimal_string")]
+    pub price_goat_wei_per_mebibyte: u128,
+    /// 0x-prefixed 32-byte hex when set. Shape-checked unconditionally.
+    pub allowlist_manifest_digest: Option<String>,
+    /// **Clamped** to [`crate::proxy::MIN_METER_MIN_REQUEST_INTERVAL_MS`] ..=
+    /// [`crate::proxy::MAX_METER_MIN_REQUEST_INTERVAL_MS`].
+    pub meter_min_request_interval_ms: u64,
+    /// **Clamped** to [`crate::proxy::MIN_RECEIPT_PAGE_SIZE`] ..=
+    /// [`crate::proxy::MAX_RECEIPT_PAGE_SIZE`].
+    pub receipt_page_size: u32,
+}
+
+fn serialize_u128_as_decimal_string<S>(value: &u128, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&value.to_string())
+}
+
+/// True for `0x`-prefixed hex of exactly `nybbles` digits. The prefix is
+/// required rather than optional: "is this 40 characters an address or the tail
+/// of a digest" is not a question a config parser should be guessing at.
+fn is_prefixed_hex(value: &str, nybbles: usize) -> bool {
+    match value.strip_prefix("0x") {
+        Some(digits) => digits.len() == nybbles && digits.bytes().all(|b| b.is_ascii_hexdigit()),
+        None => false,
+    }
+}
+
+impl ProxyConfig {
+    /// Every band, shape and required-when-enabled rule, in one place.
+    ///
+    /// Called unconditionally from `build_proxy_config`, and public so a
+    /// hand-built config (a test, a future router mount) is held to the same
+    /// rules as one parsed from the environment.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        use crate::proxy;
+
+        match self.chain_id {
+            Some(id) if !proxy::PROXY_CHAIN_ALLOWLIST.contains(&id) => {
+                return Err(ConfigError::Invalid {
+                    key: ENV_PROXY_CHAIN_ID.to_string(),
+                    msg: format!(
+                        "{id} is not a permitted chain for this lane; \
+                         deploys and integration runs are permitted on {:?} only",
+                        proxy::PROXY_CHAIN_ALLOWLIST
+                    ),
+                });
+            }
+            None if self.enabled => {
+                return Err(ConfigError::Missing(ENV_PROXY_CHAIN_ID.to_string()));
+            }
+            _ => {}
+        }
+
+        if !(proxy::MIN_TAKE_BPS..=proxy::MAX_TAKE_BPS).contains(&self.protocol_take_bps) {
+            return Err(ConfigError::Invalid {
+                key: ENV_PROXY_PROTOCOL_TAKE_BPS.to_string(),
+                msg: format!(
+                    "{} is outside the launch band {}..={}; this value is REFUSED, never clamped",
+                    self.protocol_take_bps,
+                    proxy::MIN_TAKE_BPS,
+                    proxy::MAX_TAKE_BPS
+                ),
+            });
+        }
+
+        if !(proxy::MIN_EPOCH_BYTE_CEILING..=proxy::MAX_EPOCH_BYTE_CEILING)
+            .contains(&self.epoch_byte_ceiling)
+        {
+            return Err(ConfigError::Invalid {
+                key: ENV_PROXY_EPOCH_BYTE_CEILING.to_string(),
+                msg: format!(
+                    "{} is outside {}..={} bytes; this value is REFUSED, never clamped",
+                    self.epoch_byte_ceiling,
+                    proxy::MIN_EPOCH_BYTE_CEILING,
+                    proxy::MAX_EPOCH_BYTE_CEILING
+                ),
+            });
+        }
+
+        if !(proxy::MIN_PRICE_GOAT_WEI_PER_MEBIBYTE..=proxy::MAX_PRICE_GOAT_WEI_PER_MEBIBYTE)
+            .contains(&self.price_goat_wei_per_mebibyte)
+        {
+            return Err(ConfigError::Invalid {
+                key: ENV_PROXY_PRICE_GOAT_WEI_PER_MEBIBYTE.to_string(),
+                msg: format!(
+                    "{} is outside {}..={} wei per mebibyte; this value is REFUSED, never clamped",
+                    self.price_goat_wei_per_mebibyte,
+                    proxy::MIN_PRICE_GOAT_WEI_PER_MEBIBYTE,
+                    proxy::MAX_PRICE_GOAT_WEI_PER_MEBIBYTE
+                ),
+            });
+        }
+
+        if !(proxy::MIN_PAIR_CONCENTRATION_BPS..=proxy::MAX_PAIR_CONCENTRATION_BPS)
+            .contains(&self.pair_concentration_bps)
+        {
+            return Err(ConfigError::Invalid {
+                key: ENV_PROXY_PAIR_CONCENTRATION_BPS.to_string(),
+                msg: format!(
+                    "{} is outside {}..={}; this value is REFUSED, never clamped",
+                    self.pair_concentration_bps,
+                    proxy::MIN_PAIR_CONCENTRATION_BPS,
+                    proxy::MAX_PAIR_CONCENTRATION_BPS
+                ),
+            });
+        }
+
+        for (key, value, nybbles) in [
+            (
+                ENV_PROXY_SETTLEMENT_ADDRESS,
+                self.settlement_address.as_deref(),
+                40,
+            ),
+            (
+                ENV_PROXY_CONSUMER_REGISTRY_ADDRESS,
+                self.consumer_registry_address.as_deref(),
+                40,
+            ),
+            (
+                ENV_PROXY_VERIFYING_CONTRACT,
+                self.verifying_contract.as_deref(),
+                40,
+            ),
+            (ENV_PROXY_GATEWAY_ID, self.gateway_id.as_deref(), 64),
+            (
+                ENV_PROXY_ALLOWLIST_MANIFEST_DIGEST,
+                self.allowlist_manifest_digest.as_deref(),
+                64,
+            ),
+        ] {
+            if let Some(v) = value {
+                if !is_prefixed_hex(v, nybbles) {
+                    return Err(ConfigError::Invalid {
+                        key: key.to_string(),
+                        msg: format!("expected 0x-prefixed {nybbles}-digit hex, got {v:?}"),
+                    });
+                }
+            }
+        }
+
+        if let Some(endpoint) = self.meter_endpoint.as_deref() {
+            if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+                return Err(ConfigError::Invalid {
+                    key: ENV_PROXY_METER_ENDPOINT.to_string(),
+                    msg: format!("expected an http:// or https:// origin, got {endpoint:?}"),
+                });
+            }
+        }
+
+        if self.enabled {
+            let mut missing: Vec<&str> = Vec::new();
+            if self.settlement_address.is_none() {
+                missing.push(ENV_PROXY_SETTLEMENT_ADDRESS);
+            }
+            if self.meter_endpoint.is_none() {
+                missing.push(ENV_PROXY_METER_ENDPOINT);
+            }
+            if self.consumer_registry_address.is_none() {
+                missing.push(ENV_PROXY_CONSUMER_REGISTRY_ADDRESS);
+            }
+            if self.gateway_id.is_none() {
+                missing.push(ENV_PROXY_GATEWAY_ID);
+            }
+            if !missing.is_empty() {
+                return Err(ConfigError::Missing(missing.join(", ")));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Build [`ProxyConfig`] from env and validate it **unconditionally**.
+///
+/// `chain_id` is the already-parsed top-level `CHAIN_ID`, inherited per the
+/// rules on [`ProxyConfig::chain_id`].
+fn build_proxy_config(
+    map: &HashMap<String, String>,
+    chain_id: u64,
+) -> Result<ProxyConfig, ConfigError> {
+    use crate::proxy;
+
+    let enabled = parse_bool_default(map, ENV_PROXY_ENABLED, false);
+
+    let explicit_chain_id = match optional_key(map, ENV_PROXY_CHAIN_ID) {
+        Some(raw) => Some(raw.parse::<u64>().map_err(|e| ConfigError::Invalid {
+            key: ENV_PROXY_CHAIN_ID.to_string(),
+            msg: e.to_string(),
+        })?),
+        None => None,
+    };
+    let resolved_chain_id = match explicit_chain_id {
+        Some(id) => Some(id),
+        None if enabled => Some(chain_id),
+        None if proxy::PROXY_CHAIN_ALLOWLIST.contains(&chain_id) => Some(chain_id),
+        None => None,
+    };
+
+    let settlement_address = optional_key(map, ENV_PROXY_SETTLEMENT_ADDRESS);
+    let verifying_contract =
+        optional_key(map, ENV_PROXY_VERIFYING_CONTRACT).or_else(|| settlement_address.clone());
+
+    let cfg = ProxyConfig {
+        enabled,
+        settlement_address,
+        consumer_registry_address: optional_key(map, ENV_PROXY_CONSUMER_REGISTRY_ADDRESS),
+        gateway_id: optional_key(map, ENV_PROXY_GATEWAY_ID),
+        meter_endpoint: optional_key(map, ENV_PROXY_METER_ENDPOINT),
+        chain_id: resolved_chain_id,
+        verifying_contract,
+        protocol_take_bps: parse_u32(map, ENV_PROXY_PROTOCOL_TAKE_BPS, DEFAULT_PROXY_TAKE_BPS)?,
+        epoch_byte_ceiling: parse_u64(
+            map,
+            ENV_PROXY_EPOCH_BYTE_CEILING,
+            proxy::MAX_EPOCH_BYTE_CEILING,
+        )?,
+        pair_concentration_bps: parse_u32(
+            map,
+            ENV_PROXY_PAIR_CONCENTRATION_BPS,
+            DEFAULT_PROXY_PAIR_CONCENTRATION_BPS,
+        )?,
+        price_goat_wei_per_mebibyte: parse_u128(
+            map,
+            ENV_PROXY_PRICE_GOAT_WEI_PER_MEBIBYTE,
+            DEFAULT_PROXY_PRICE_GOAT_WEI_PER_MEBIBYTE,
+        )?,
+        allowlist_manifest_digest: optional_key(map, ENV_PROXY_ALLOWLIST_MANIFEST_DIGEST),
+        meter_min_request_interval_ms: parse_u64_clamped(
+            map,
+            ENV_PROXY_METER_MIN_REQUEST_INTERVAL_MS,
+            proxy::DEFAULT_METER_MIN_REQUEST_INTERVAL_MS,
+            proxy::MIN_METER_MIN_REQUEST_INTERVAL_MS,
+            proxy::MAX_METER_MIN_REQUEST_INTERVAL_MS,
+        )?,
+        receipt_page_size: u32::try_from(parse_u64_clamped(
+            map,
+            ENV_PROXY_RECEIPT_PAGE_SIZE,
+            u64::from(proxy::DEFAULT_RECEIPT_PAGE_SIZE),
+            u64::from(proxy::MIN_RECEIPT_PAGE_SIZE),
+            u64::from(proxy::MAX_RECEIPT_PAGE_SIZE),
+        )?)
+        .unwrap_or(proxy::DEFAULT_RECEIPT_PAGE_SIZE),
+    };
+
+    cfg.validate()?;
+    Ok(cfg)
+}
+
 /// Load config from a key/value map (tests + programmatic use).
 pub fn load_from_map(map: &HashMap<String, String>) -> Result<Config, ConfigError> {
     let mut missing: Vec<&str> = Vec::new();
@@ -665,6 +1056,7 @@ pub fn load_from_map(map: &HashMap<String, String>) -> Result<Config, ConfigErro
         .unwrap_or("./state")
         .to_string();
     let stream_g = build_stream_g_config(map, &state_dir_str, chain_id)?;
+    let proxy = build_proxy_config(map, chain_id)?;
 
     Ok(Config {
         rpc_url: require(map, "RPC_URL")?,
@@ -718,6 +1110,7 @@ pub fn load_from_map(map: &HashMap<String, String>) -> Result<Config, ConfigErro
             }
         },
         stream_g,
+        proxy,
     })
 }
 
@@ -1282,6 +1675,507 @@ mod tests {
         // numeric knob in this module.
         let mut m = Config::test_map();
         m.insert(ENV_BROADCAST_GAS_LIMIT.into(), "lots".into());
+        assert!(load_from_map(&m).is_err());
+    }
+
+    // -- Fetch-network revenue lane configuration (Task 10) ---------------
+
+    /// A map with everything an enabled lane demands, and nothing more.
+    fn proxy_enabled_map() -> HashMap<String, String> {
+        let mut m = Config::test_map();
+        m.insert(ENV_PROXY_ENABLED.into(), "1".into());
+        m.insert(
+            ENV_PROXY_SETTLEMENT_ADDRESS.into(),
+            "0xEF0f6FA72f90Bda42759fd9Bf4667345B47dE0F1".into(),
+        );
+        m.insert(
+            ENV_PROXY_CONSUMER_REGISTRY_ADDRESS.into(),
+            "0xCF75462c9e7fFf4eEB0c50185087a0fb9A056d2b".into(),
+        );
+        m.insert(
+            ENV_PROXY_GATEWAY_ID.into(),
+            "0x1111111111111111111111111111111111111111111111111111111111111111".into(),
+        );
+        m.insert(
+            ENV_PROXY_METER_ENDPOINT.into(),
+            "http://127.0.0.1:9099".into(),
+        );
+        m
+    }
+
+    /// The lane is off by default, and every numeric band is still enforced.
+    ///
+    /// A disabled lane carrying a take of 40% or a one-byte epoch ceiling is not
+    /// a saving; it is a landmine that arms itself the moment somebody sets
+    /// `PROXY_ENABLED=1`, at which point the operator who flips the flag is not
+    /// the operator who typed the bad number.
+    ///
+    /// Mutations this detects: wrapping any band check in `if self.enabled`;
+    /// moving `cfg.validate()?` inside an `if enabled` arm in
+    /// `build_proxy_config`; defaulting [`ENV_PROXY_ENABLED`] to true.
+    #[test]
+    fn proxy_numeric_validation_runs_even_when_the_lane_is_disabled() {
+        let cfg = load_from_map(&Config::test_map()).expect("bare map must load");
+        assert!(
+            !cfg.proxy.enabled,
+            "precondition: the lane ships OFF, so every arm below is a disabled load"
+        );
+
+        // A bad take, with the lane off.
+        let mut m = Config::test_map();
+        m.insert(ENV_PROXY_PROTOCOL_TAKE_BPS.into(), "4000".into());
+        let err = load_from_map(&m).expect_err("a 40% take must refuse even with the lane off");
+        assert!(
+            matches!(&err, ConfigError::Invalid { key, .. } if key == ENV_PROXY_PROTOCOL_TAKE_BPS),
+            "the refusal must name the key an operator has to change: {err}"
+        );
+
+        // A bad ceiling, with the lane off.
+        let mut m = Config::test_map();
+        m.insert(ENV_PROXY_EPOCH_BYTE_CEILING.into(), "1".into());
+        let err = load_from_map(&m).expect_err("a one-byte epoch ceiling must refuse");
+        assert!(
+            matches!(&err, ConfigError::Invalid { key, .. } if key == ENV_PROXY_EPOCH_BYTE_CEILING),
+            "{err}"
+        );
+
+        // Negative control: the same two keys at legal values load fine, so the
+        // refusals above are the band firing and not the lane refusing
+        // everything it is handed.
+        let mut m = Config::test_map();
+        m.insert(ENV_PROXY_PROTOCOL_TAKE_BPS.into(), "900".into());
+        m.insert(
+            ENV_PROXY_EPOCH_BYTE_CEILING.into(),
+            crate::proxy::MIN_EPOCH_BYTE_CEILING.to_string(),
+        );
+        let cfg = load_from_map(&m).expect("in-band values must load").proxy;
+        assert_eq!(cfg.protocol_take_bps, 900);
+        assert_eq!(cfg.epoch_byte_ceiling, crate::proxy::MIN_EPOCH_BYTE_CEILING);
+        assert!(!cfg.enabled, "still a disabled load");
+    }
+
+    /// The two postures, side by side in one test because the contrast is the
+    /// property: money knobs REFUSE, throughput knobs CLAMP.
+    ///
+    /// Mutations this detects: replacing any `validate` band check with a
+    /// `clamp` (the refusal an operator is entitled to see disappears and value
+    /// silently moves); replacing either `parse_u64_clamped` call with a band
+    /// check (the daemon then refuses to start over a cadence typo); swapping
+    /// which group a knob belongs to.
+    #[test]
+    fn proxy_money_knobs_reject_and_throughput_knobs_clamp() {
+        // -- REFUSED: three money knobs, both edges of each ------------------
+        for (key, bad) in [
+            (ENV_PROXY_PROTOCOL_TAKE_BPS, "799"),
+            (ENV_PROXY_PROTOCOL_TAKE_BPS, "1001"),
+            (ENV_PROXY_PRICE_GOAT_WEI_PER_MEBIBYTE, "0"),
+            (ENV_PROXY_PRICE_GOAT_WEI_PER_MEBIBYTE, "1000000000000000001"),
+            (ENV_PROXY_EPOCH_BYTE_CEILING, "1073741823"),
+            (ENV_PROXY_EPOCH_BYTE_CEILING, "214748364801"),
+            (ENV_PROXY_PAIR_CONCENTRATION_BPS, "0"),
+            (ENV_PROXY_PAIR_CONCENTRATION_BPS, "10001"),
+        ] {
+            let mut m = Config::test_map();
+            m.insert(key.into(), bad.into());
+            let err = load_from_map(&m)
+                .err()
+                .unwrap_or_else(|| panic!("{key}={bad} must be REFUSED, not clamped"));
+            assert!(
+                matches!(&err, ConfigError::Invalid { key: named, .. } if named == key),
+                "the refusal must name the key an operator has to change: {err}"
+            );
+            assert!(
+                err.to_string().contains("REFUSED, never clamped"),
+                "the refusal must say which posture it is: {err}"
+            );
+        }
+
+        // Negative control: the loosest legal value on each of the four money
+        // knobs loads, so the eight refusals above are the bands firing and not
+        // a lane that refuses every value it is handed.
+        let mut m = Config::test_map();
+        m.insert(ENV_PROXY_PROTOCOL_TAKE_BPS.into(), "800".into());
+        m.insert(
+            ENV_PROXY_PRICE_GOAT_WEI_PER_MEBIBYTE.into(),
+            "1000000000000000000".into(),
+        );
+        m.insert(ENV_PROXY_EPOCH_BYTE_CEILING.into(), "1073741824".into());
+        m.insert(ENV_PROXY_PAIR_CONCENTRATION_BPS.into(), "10000".into());
+        let cfg = load_from_map(&m)
+            .expect("the boundary values are ACCEPTED; the bands are inclusive")
+            .proxy;
+        assert_eq!(cfg.protocol_take_bps, 800);
+        assert_eq!(cfg.price_goat_wei_per_mebibyte, 1_000_000_000_000_000_000);
+        assert_eq!(cfg.epoch_byte_ceiling, 1_073_741_824);
+        assert_eq!(cfg.pair_concentration_bps, 10_000);
+
+        // -- CLAMPED: the two throughput knobs, both edges -------------------
+        let mut m = Config::test_map();
+        m.insert(ENV_PROXY_METER_MIN_REQUEST_INTERVAL_MS.into(), "0".into());
+        m.insert(ENV_PROXY_RECEIPT_PAGE_SIZE.into(), "0".into());
+        let cfg = load_from_map(&m)
+            .expect("throughput knobs clamp; they do not refuse")
+            .proxy;
+        assert_eq!(
+            cfg.meter_min_request_interval_ms,
+            crate::proxy::MIN_METER_MIN_REQUEST_INTERVAL_MS
+        );
+        assert_eq!(cfg.receipt_page_size, crate::proxy::MIN_RECEIPT_PAGE_SIZE);
+
+        let mut m = Config::test_map();
+        m.insert(
+            ENV_PROXY_METER_MIN_REQUEST_INTERVAL_MS.into(),
+            "18446744073709551615".into(),
+        );
+        m.insert(ENV_PROXY_RECEIPT_PAGE_SIZE.into(), "999999".into());
+        let cfg = load_from_map(&m).expect("throughput knobs clamp").proxy;
+        assert_eq!(
+            cfg.meter_min_request_interval_ms,
+            crate::proxy::MAX_METER_MIN_REQUEST_INTERVAL_MS
+        );
+        assert_eq!(cfg.receipt_page_size, crate::proxy::MAX_RECEIPT_PAGE_SIZE);
+
+        // A value INSIDE the clamp band survives untouched, so the two
+        // assertions above are a clamp and not a constant.
+        let mut m = Config::test_map();
+        m.insert(ENV_PROXY_METER_MIN_REQUEST_INTERVAL_MS.into(), "250".into());
+        m.insert(ENV_PROXY_RECEIPT_PAGE_SIZE.into(), "42".into());
+        let cfg = load_from_map(&m).expect("in-band").proxy;
+        assert_eq!(cfg.meter_min_request_interval_ms, 250);
+        assert_eq!(cfg.receipt_page_size, 42);
+
+        // A SYNTACTICALLY bad value refuses in BOTH groups. Clamping is about
+        // semantics; an unparseable knob is still a config error.
+        for key in [
+            ENV_PROXY_PROTOCOL_TAKE_BPS,
+            ENV_PROXY_METER_MIN_REQUEST_INTERVAL_MS,
+            ENV_PROXY_RECEIPT_PAGE_SIZE,
+        ] {
+            let mut m = Config::test_map();
+            m.insert(key.into(), "lots".into());
+            assert!(
+                load_from_map(&m).is_err(),
+                "{key} must refuse an unparseable value"
+            );
+        }
+    }
+
+    /// `800` and `1_000` are accepted; `799` and `1_001` are not.
+    ///
+    /// The band encodes the **launch band** from the "The No-Ponzi Invariant —
+    /// GoatCoin's load-bearing economic rule" spec, §8, and deliberately not
+    /// that section's hard ceiling. An earlier draft used the hard ceiling as
+    /// the maximum, which made 15% a routine config value: paired with a
+    /// contract that derives nothing from this number, one env edit would have
+    /// moved five percent of gross away from operators with every test green.
+    ///
+    /// Mutations this detects: raising [`crate::proxy::MAX_TAKE_BPS`] to the
+    /// hard ceiling (1_500) or to any other value; lowering
+    /// [`crate::proxy::MIN_TAKE_BPS`]; turning either comparison into a
+    /// non-strict one on the wrong side.
+    #[test]
+    fn the_take_band_is_the_launch_band_not_the_hard_ceiling() {
+        for accepted in ["800", "900", "1000"] {
+            let mut m = Config::test_map();
+            m.insert(ENV_PROXY_PROTOCOL_TAKE_BPS.into(), accepted.into());
+            let cfg = load_from_map(&m)
+                .unwrap_or_else(|e| panic!("{accepted} bps is inside the launch band: {e}"))
+                .proxy;
+            assert_eq!(cfg.protocol_take_bps.to_string(), accepted);
+        }
+
+        for refused in ["799", "1001", "1500"] {
+            let mut m = Config::test_map();
+            m.insert(ENV_PROXY_PROTOCOL_TAKE_BPS.into(), refused.into());
+            let err = load_from_map(&m)
+                .err()
+                .unwrap_or_else(|| panic!("{refused} bps is outside the launch band"));
+            assert!(
+                matches!(&err, ConfigError::Invalid { key, .. }
+                    if key == ENV_PROXY_PROTOCOL_TAKE_BPS),
+                "{err}"
+            );
+        }
+
+        // The specific regression, named: 1_500 bps is the hard ceiling and
+        // must never be the band's top.
+        assert_ne!(
+            crate::proxy::MAX_TAKE_BPS,
+            1_500,
+            "MAX_TAKE_BPS is the ~10% LAUNCH band, not the ~15% hard ceiling"
+        );
+    }
+
+    /// The off-chain take must equal the immutable the settlement contract was
+    /// deployed with. One side is configurable, the other cannot change without
+    /// a redeploy, and nothing else in this lane compares them.
+    ///
+    /// Mutations this detects: changing [`DEFAULT_PROXY_TAKE_BPS`] away from
+    /// the deployed `takeBps`; editing `takeBps` in the deployment record
+    /// without redeploying; pointing [`DEFAULT_PROXY_TAKE_BPS`] at
+    /// [`crate::proxy::MIN_TAKE_BPS`].
+    #[test]
+    fn the_configured_take_equals_the_deployed_take() {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = crate_dir
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("crate sits two levels below the repo root");
+        let record = repo
+            .join("contracts")
+            .join("deployments")
+            .join("31337.proxy.json");
+        let text = std::fs::read_to_string(&record).unwrap_or_else(|e| {
+            panic!(
+                "the deployment record is the only authority for the on-chain take: {}: {e}",
+                record.display()
+            )
+        });
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("deployment record must be JSON");
+
+        let deployed = parsed
+            .get("takeBps")
+            .and_then(serde_json::Value::as_u64)
+            .expect("deployment record must carry takeBps");
+        let deployed_chain = parsed
+            .get("chainId")
+            .and_then(serde_json::Value::as_u64)
+            .expect("deployment record must carry chainId");
+        assert_eq!(
+            deployed_chain, 31_337,
+            "this record is the Anvil deployment"
+        );
+
+        let cfg = load_from_map(&Config::test_map()).expect("config").proxy;
+        assert_eq!(
+            u64::from(cfg.protocol_take_bps),
+            deployed,
+            "the configured take and the deployed immutable have diverged"
+        );
+
+        // The comparison only proves something while the deployed value is a
+        // real number inside the band the config would accept.
+        assert!(
+            (u64::from(crate::proxy::MIN_TAKE_BPS)..=u64::from(crate::proxy::MAX_TAKE_BPS))
+                .contains(&deployed),
+            "the DEPLOYED take {deployed} is outside the launch band; the contract, not the \
+             config, is the thing to fix"
+        );
+    }
+
+    /// An enabled lane must be able to name what it settles against and where
+    /// the independent counter lives.
+    ///
+    /// The two in the test name are the spec's; the other two are here because
+    /// an enabled lane without them is worse than a disabled one — no consumer
+    /// registry means self-dealing cannot be checked, and no gateway id means
+    /// the witness signature is checked against nothing, so two of three
+    /// parties verify and the bundle reports success.
+    ///
+    /// Mutations this detects: dropping any key from the required set; making
+    /// the required-set check conditional on something other than `enabled`.
+    #[test]
+    fn enabling_the_proxy_lane_requires_the_settlement_address_and_the_meter_endpoint() {
+        // Positive control first: the complete map loads, so the refusals below
+        // are the missing key and not a lane that refuses everything.
+        let cfg = load_from_map(&proxy_enabled_map())
+            .expect("a complete enabled map must load")
+            .proxy;
+        assert!(cfg.enabled);
+        assert_eq!(cfg.chain_id, Some(31_337), "inherited from CHAIN_ID");
+        assert_eq!(
+            cfg.verifying_contract, cfg.settlement_address,
+            "an unset verifying contract defaults to the settlement address"
+        );
+
+        for key in [
+            ENV_PROXY_SETTLEMENT_ADDRESS,
+            ENV_PROXY_METER_ENDPOINT,
+            ENV_PROXY_CONSUMER_REGISTRY_ADDRESS,
+            ENV_PROXY_GATEWAY_ID,
+        ] {
+            let mut m = proxy_enabled_map();
+            m.remove(key);
+            let err = load_from_map(&m)
+                .err()
+                .unwrap_or_else(|| panic!("an enabled lane without {key} must refuse"));
+            assert!(
+                err.to_string().contains(key),
+                "the refusal must name the missing key: {err}"
+            );
+        }
+
+        // The same map with the lane OFF loads with all four absent: this is
+        // required-when-enabled, not required-always.
+        let mut m = proxy_enabled_map();
+        m.insert(ENV_PROXY_ENABLED.into(), "0".into());
+        for key in [
+            ENV_PROXY_SETTLEMENT_ADDRESS,
+            ENV_PROXY_METER_ENDPOINT,
+            ENV_PROXY_CONSUMER_REGISTRY_ADDRESS,
+            ENV_PROXY_GATEWAY_ID,
+        ] {
+            m.remove(key);
+        }
+        assert!(load_from_map(&m).is_ok());
+
+        // A present-but-malformed value is refused on shape, enabled or not.
+        let mut m = Config::test_map();
+        m.insert(ENV_PROXY_SETTLEMENT_ADDRESS.into(), "not-an-address".into());
+        let err = load_from_map(&m).expect_err("a malformed address must refuse");
+        assert!(
+            matches!(&err, ConfigError::Invalid { key, .. } if key == ENV_PROXY_SETTLEMENT_ADDRESS),
+            "{err}"
+        );
+        let mut m = Config::test_map();
+        m.insert(ENV_PROXY_METER_ENDPOINT.into(), "127.0.0.1:9099".into());
+        assert!(
+            load_from_map(&m).is_err(),
+            "an endpoint with no scheme must refuse"
+        );
+    }
+
+    /// Neither knob exists, proved by reflection over the struct's own
+    /// serialisation rather than by reading the declaration.
+    ///
+    /// A configurable tolerance is an inflation budget with a published size:
+    /// the challenge is strict equality in both directions, and the correct
+    /// implementation of zero tolerance is no parameter at all. A configurable
+    /// chunk size is a configurable receipt count, and receipt count is an
+    /// anti-fraud surface.
+    ///
+    /// Mutations this detects: adding either knob under any spelling; adding
+    /// any field at all without raising the floor (the floor is an EQUALITY, so
+    /// a field added silently reds this test in the commit that adds it).
+    #[test]
+    fn the_proxy_config_exposes_no_tolerance_and_no_chunk_size_knob() {
+        let cfg = load_from_map(&Config::test_map()).expect("config").proxy;
+        let serialised = serde_json::to_value(&cfg).expect("ProxyConfig must serialise");
+        let keys: Vec<String> = serialised
+            .as_object()
+            .expect("a struct serialises to a JSON object")
+            .keys()
+            .cloned()
+            .collect();
+
+        /// Raised by the task that adds a field, in the same commit.
+        const PROXY_CONFIG_FIELDS_AT_THIS_TASK: usize = 14;
+        assert_eq!(
+            keys.len(),
+            PROXY_CONFIG_FIELDS_AT_THIS_TASK,
+            "the field floor is an equality: raise it in the commit that adds a field, so a new \
+             knob cannot arrive unreviewed. Fields seen: {keys:?}"
+        );
+
+        // Needles assembled at runtime so this file never carries either
+        // forbidden knob name as a literal a future sweep could match.
+        let needles = [
+            format!("toler{}", "ance"),
+            format!("{}_size", "chunk"),
+            format!("{}_bytes", "chunk"),
+        ];
+
+        let hits = |set: &[String]| -> Vec<String> {
+            set.iter()
+                .filter(|k| {
+                    let lower = k.to_ascii_lowercase();
+                    needles.iter().any(|n| lower.contains(n.as_str()))
+                })
+                .cloned()
+                .collect()
+        };
+
+        // POSITIVE CONTROL, before trusting the empty result: the same matcher
+        // over the same key set plus two planted names must find exactly those
+        // two. An empty answer from a matcher that can never fire is not
+        // evidence of absence.
+        let mut planted = keys.clone();
+        planted.push(format!("meter_toler{}_bps", "ance"));
+        planted.push(format!("receipt_{}_size", "chunk"));
+        assert_eq!(
+            hits(&planted).len(),
+            2,
+            "the matcher did not fire on planted knob names, so its silence below proves nothing"
+        );
+
+        assert!(
+            hits(&keys).is_empty(),
+            "ProxyConfig grew a tolerance or chunk-size knob: {:?}",
+            hits(&keys)
+        );
+    }
+
+    /// `31337` and `84532` are accepted; anything else is a startup refusal.
+    ///
+    /// The last two arms pin the one deliberate exemption documented on
+    /// [`ProxyConfig::chain_id`]: with the lane OFF and no `PROXY_CHAIN_ID`
+    /// set, a top-level `CHAIN_ID` this lane has no deployment for resolves to
+    /// `None` rather than failing the whole daemon's startup over a lane nobody
+    /// asked for. Enabling the lane on that same chain IS a refusal.
+    ///
+    /// Mutations this detects: adding a chain to
+    /// [`crate::proxy::PROXY_CHAIN_ALLOWLIST`]; letting the enabled arm inherit
+    /// an unchecked id; widening the exemption to cover an explicitly-set
+    /// `PROXY_CHAIN_ID`, which would let the operator name a chain and have it
+    /// ignored.
+    #[test]
+    fn proxy_chain_id_is_restricted_to_the_allowlist() {
+        for accepted in [31_337u64, 84_532] {
+            let mut m = Config::test_map();
+            m.insert(ENV_PROXY_CHAIN_ID.into(), accepted.to_string());
+            let cfg = load_from_map(&m)
+                .unwrap_or_else(|e| panic!("{accepted} is on the allowlist: {e}"))
+                .proxy;
+            assert_eq!(cfg.chain_id, Some(accepted));
+        }
+
+        for refused in [1u64, 8_453, 0, 84_531, 137] {
+            let mut m = Config::test_map();
+            m.insert(ENV_PROXY_CHAIN_ID.into(), refused.to_string());
+            let err = load_from_map(&m)
+                .err()
+                .unwrap_or_else(|| panic!("{refused} is not on the allowlist"));
+            assert!(
+                matches!(&err, ConfigError::Invalid { key, .. } if key == ENV_PROXY_CHAIN_ID),
+                "{err}"
+            );
+        }
+
+        // Enabled, inheriting a chain id with no deployment → refusal.
+        let mut m = proxy_enabled_map();
+        m.insert("CHAIN_ID".into(), "8453".into());
+        let err = load_from_map(&m).expect_err("an enabled lane on Base mainnet must refuse");
+        assert!(
+            matches!(&err, ConfigError::Invalid { key, .. } if key == ENV_PROXY_CHAIN_ID),
+            "{err}"
+        );
+
+        // Disabled, inheriting the same id, nothing set → not a refusal, and
+        // not a silently-adopted bad value either.
+        let mut m = Config::test_map();
+        m.insert("CHAIN_ID".into(), "8453".into());
+        let cfg = load_from_map(&m)
+            .expect("a lane nobody enabled must not fail the daemon's startup")
+            .proxy;
+        assert!(!cfg.enabled);
+        assert_eq!(
+            cfg.chain_id, None,
+            "an unresolvable chain id must be absent, never a guess"
+        );
+
+        // Disabled but on an allowlisted chain → adopted, so the exemption is
+        // narrow rather than "disabled means unchecked".
+        let mut m = Config::test_map();
+        m.insert("CHAIN_ID".into(), "84532".into());
+        assert_eq!(
+            load_from_map(&m).expect("config").proxy.chain_id,
+            Some(84_532)
+        );
+
+        // A syntactically bad chain id refuses even while disabled.
+        let mut m = Config::test_map();
+        m.insert(ENV_PROXY_CHAIN_ID.into(), "anvil".into());
         assert!(load_from_map(&m).is_err());
     }
 }

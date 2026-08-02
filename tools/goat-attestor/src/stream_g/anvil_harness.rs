@@ -883,7 +883,9 @@ impl AnvilHarness {
             if Instant::now() >= deadline {
                 let cause = match &last_err {
                     Some(e) => format!("last transport error: {e}"),
-                    None => "the node answered null every time (accepted but never mined)".to_string(),
+                    None => {
+                        "the node answered null every time (accepted but never mined)".to_string()
+                    }
                 };
                 panic!(
                     "the node has no receipt for {tx_hash} ({what}) after {polls} poll(s) over \
@@ -3058,7 +3060,10 @@ mod tests {
         }
 
         let written = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!("the forensics sink wrote no file at {}: {e}", path.display())
+            panic!(
+                "the forensics sink wrote no file at {}: {e}",
+                path.display()
+            )
         });
 
         // Both readings, in order: an append, not an overwrite.
@@ -3412,6 +3417,7 @@ mod tests {
     };
     // -- Wave D --------------------------------------------------------
     use crate::sig_verify;
+    use crate::stream_g::broadcaster::SponsoredEnrollmentTxSigner;
     use crate::stream_g::crypto_store::{self, DataKey, SecretHex};
     use crate::stream_g::models::{
         eip712_digest, eip712_domain_separator, fee_quote_digest, link_secondary_digest,
@@ -3426,10 +3432,7 @@ mod tests {
     use crate::stream_g::profile_auth::AuthenticatedProfileId;
     use crate::stream_g::root_authorization::ROOT_AUTHORIZATION_TYPEHASH_STR;
     use crate::stream_g::store::{StreamGStore, StreamGStoreError};
-    use crate::stream_g::broadcaster::SponsoredEnrollmentTxSigner;
-    use crate::stream_g::submit::{
-        self, SigningLeaseRegistry, SubmitContext, SubmitError,
-    };
+    use crate::stream_g::submit::{self, SigningLeaseRegistry, SubmitContext, SubmitError};
     // -- Wave D2 (the reconciliation lifecycle proof) --------------------
     use crate::stream_g::broadcaster::{
         BroadcastGasPolicy, PriorityFeePerGas, RpcChainEnrollmentSigner,
@@ -7047,8 +7050,9 @@ mod tests {
                 .get("blockNumber")
                 .and_then(|b| b.as_str())
                 .expect("a mined receipt has a block number");
-            let log_block = u64::from_str_radix(block_hex.strip_prefix("0x").unwrap_or(block_hex), 16)
-                .expect("receipt block number is hex");
+            let log_block =
+                u64::from_str_radix(block_hex.strip_prefix("0x").unwrap_or(block_hex), 16)
+                    .expect("receipt block number is hex");
 
             // The three on-chain effects, each read by raw `eth_call`.
             assert_eq!(
@@ -7185,9 +7189,9 @@ mod tests {
                     );
                 }
                 ReconcileStepOutcome::NothingToScan { .. } => {}
-                other => panic!(
-                    "the shallow pass neither scanned nor found an empty window: {other:?}"
-                ),
+                other => {
+                    panic!("the shallow pass neither scanned nor found an empty window: {other:?}")
+                }
             }
             println!("step 2: shallow pass at head {head_before} -> {shallow:?}");
 

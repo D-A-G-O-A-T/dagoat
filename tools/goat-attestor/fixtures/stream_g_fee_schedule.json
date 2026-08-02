@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "feeScheduleHash": "0x1c663d43fccc550dd95ef9dcd469eb12ac98006d355fea4ce9fcdc002ff8d952",
-  "note": "PLACEHOLDER SCHEDULE - NO TARIFF IS SET AND NO QUOTE CAN BE SERVED FROM THIS FILE. The Season-0 tariffs are a founder decision that has NOT been taken. Every 'actionFeesRaw' entry is null rather than a stand-in number: any parseable amount - INCLUDING \"0\" - would be signed verbatim into the EIP-712 FeeQuote a payer hands to GoatRelayGateway (see models::fee_quote_struct_hash), so a placeholder PRICE would be indistinguishable from a real one to every party downstream. The four keys cannot simply be omitted either, because the published schema requires all four canonical actionType names to be present; null is the one encoding that is unmistakably 'not an amount'. With null there, quotes::FeeSchedule::fee_for returns MISSING_TARIFF and the quote path refuses. Every gas/calldata ceiling and maxNativeExposureWei is \"0\" and the validity window is 0..0 for the same reason: nothing here has been approved, and zero is the fail-closed value for each. 'feeScheduleHash' is NO LONGER an opaque governance tag: it is keccak256(UTF8(RFC8785(payload))) per the Stream G USDT Gas Abstraction and Multi-Wallet Sponsoring spec, section 8.1 (Quote construction), so editing ANY value in 'payload' changes it and goat-attestor will refuse to start (StreamGStartupError::FeeScheduleHashSelfMismatch). Approval metadata - this note and feeScheduleHash itself - lives OUTSIDE 'payload' per that same section, which fixes the schedule payload at exactly eleven named fields with neither of those among them, so editing the note does not move the digest. (Corrected 2026-07-27: this cited section 5.1 (FeeTokenRegistry), which is the DEPLOYMENT MANIFEST section; that is where the sentence 'Approval metadata is outside the payload' is literally written, and the schedule inherits it only via section 8.1's 'the same RFC 8785/UTF-8 rules as the deployment manifest'.) To go live: the founder sets the agreed USDT amounts (6 decimals) in actionFeesRaw, recomputes the payload digest, writes it into feeScheduleHash here, AND republishes the same value on-chain via STREAM_G_FEE_SCHEDULE_HASH. NOTE FOR THE 31337 LAB: contracts/deployments/31337.stream-g.json now carries this file's feeScheduleHash, and STREAM_G_FEE_SCHEDULE_HASH is REQUIRED by contracts/script/DeployStreamG.s.sol (vm.envBytes32, no default) - it used to fall back to keccak256(\"stream-g-fee-schedule-g1\"), a label that no payload hashes to, so a deploy could publish a value no file could produce. NOTE FOR A LIVE DEPLOYMENT: changing an ALREADY-DEPLOYED gateway's value is not a redeploy. GoatRelayGateway.setFeeScheduleHash is onlyPolicy (contracts/src/GoatRelayGateway.sol:154-157) and is the only writer of the value every quote is checked against at contracts/src/libraries/StreamGCommon.sol:122-124, so republishing a schedule requires a Policy Safe transaction.",
+  "feeScheduleHash": "0x2681f70d84c3a644290b622f42fc1fa6977c66da4343213f9967c8204ad91bf2",
+  "note": "PLACEHOLDER SCHEDULE - NO TARIFF IS SET AND NO QUOTE CAN BE SERVED FROM THIS FILE. The Season-0 tariffs are a founder decision that has NOT been taken. Every 'actionFeesRaw' entry is null rather than a stand-in number: any parseable amount - INCLUDING \"0\" - would be signed verbatim into the EIP-712 FeeQuote a payer hands to GoatRelayGateway (see models::fee_quote_struct_hash), so a placeholder PRICE would be indistinguishable from a real one to every party downstream. The seven keys cannot simply be omitted either, because the published schema requires all seven canonical actionType names to be present; null is the one encoding that is unmistakably 'not an amount'. (Three of the seven - GOAT_STREAM_G_PROXY_CLAIM_V1, GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1, GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1 - were added 2026-07-31 to reserve the tariff keys and the gateway nonce namespace for the residential-proxy settlement surface. GoatRelayGateway recognises them in nonceSnapshot and has no execute* entrypoint for any of them, so no tariff on those three rows could be quoted even if one were set.) With null there, quotes::FeeSchedule::fee_for returns MISSING_TARIFF and the quote path refuses. Every gas/calldata ceiling and maxNativeExposureWei is \"0\" and the validity window is 0..0 for the same reason: nothing here has been approved, and zero is the fail-closed value for each. 'feeScheduleHash' is NO LONGER an opaque governance tag: it is keccak256(UTF8(RFC8785(payload))) per the Stream G USDT Gas Abstraction and Multi-Wallet Sponsoring spec, section 8.1 (Quote construction), so editing ANY value in 'payload' changes it and goat-attestor will refuse to start (StreamGStartupError::FeeScheduleHashSelfMismatch). Approval metadata - this note and feeScheduleHash itself - lives OUTSIDE 'payload' per that same section, which fixes the schedule payload at exactly eleven named fields with neither of those among them, so editing the note does not move the digest. (Corrected 2026-07-27: this cited section 5.1 (FeeTokenRegistry), which is the DEPLOYMENT MANIFEST section; that is where the sentence 'Approval metadata is outside the payload' is literally written, and the schedule inherits it only via section 8.1's 'the same RFC 8785/UTF-8 rules as the deployment manifest'.) To go live: the founder sets the agreed USDT amounts (6 decimals) in actionFeesRaw, recomputes the payload digest, writes it into feeScheduleHash here, AND republishes the same value on-chain via STREAM_G_FEE_SCHEDULE_HASH. NOTE FOR THE 31337 LAB: contracts/deployments/31337.stream-g.json now carries this file's feeScheduleHash, and STREAM_G_FEE_SCHEDULE_HASH is REQUIRED by contracts/script/DeployStreamG.s.sol (vm.envBytes32, no default) - it used to fall back to keccak256(\"stream-g-fee-schedule-g1\"), a label that no payload hashes to, so a deploy could publish a value no file could produce. NOTE FOR A LIVE DEPLOYMENT: changing an ALREADY-DEPLOYED gateway's value is not a redeploy. GoatRelayGateway.setFeeScheduleHash is onlyPolicy (contracts/src/GoatRelayGateway.sol:154-157) and is the only writer of the value every quote is checked against at contracts/src/libraries/StreamGCommon.sol:122-124, so republishing a schedule requires a Policy Safe transaction.",
   "payload": {
     "schemaVersion": "1",
     "scheduleVersion": "1",
@@ -14,19 +14,28 @@
       "GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1": null,
       "GOAT_STREAM_G_SPONSORED_SELL_V1": null,
       "GOAT_STREAM_G_GOAT_TRANSFER_V1": null,
-      "GOAT_STREAM_G_USDT_TRANSFER_V1": null
+      "GOAT_STREAM_G_USDT_TRANSFER_V1": null,
+      "GOAT_STREAM_G_PROXY_CLAIM_V1": null,
+      "GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1": null,
+      "GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1": null
     },
     "gasUnitCeilings": {
       "GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1": "0",
       "GOAT_STREAM_G_SPONSORED_SELL_V1": "0",
       "GOAT_STREAM_G_GOAT_TRANSFER_V1": "0",
-      "GOAT_STREAM_G_USDT_TRANSFER_V1": "0"
+      "GOAT_STREAM_G_USDT_TRANSFER_V1": "0",
+      "GOAT_STREAM_G_PROXY_CLAIM_V1": "0",
+      "GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1": "0",
+      "GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1": "0"
     },
     "calldataByteCeilings": {
       "GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1": "0",
       "GOAT_STREAM_G_SPONSORED_SELL_V1": "0",
       "GOAT_STREAM_G_GOAT_TRANSFER_V1": "0",
-      "GOAT_STREAM_G_USDT_TRANSFER_V1": "0"
+      "GOAT_STREAM_G_USDT_TRANSFER_V1": "0",
+      "GOAT_STREAM_G_PROXY_CLAIM_V1": "0",
+      "GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1": "0",
+      "GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1": "0"
     },
     "maxNativeExposureWei": "0"
   }

@@ -107,7 +107,15 @@ pub fn enroll_digest(
     eip712_digest(&domain, &struct_hash)
 }
 
-fn domain_separator(name: &str, version: &str, chain_id: u64, verifying: [u8; 20]) -> [u8; 32] {
+/// EIP-712 domain separator. `pub(crate)`, not `pub`: the fetch-network lane
+/// (`crate::proxy::receipt`) signs under its own domain and must not grow a
+/// second implementation of this, but nothing outside the crate needs it.
+pub(crate) fn domain_separator(
+    name: &str,
+    version: &str,
+    chain_id: u64,
+    verifying: [u8; 20],
+) -> [u8; 32] {
     let mut buf = Vec::with_capacity(32 * 5);
     buf.extend_from_slice(&eip712_domain_typehash());
     buf.extend_from_slice(&keccak256(name.as_bytes()));
@@ -117,13 +125,41 @@ fn domain_separator(name: &str, version: &str, chain_id: u64, verifying: [u8; 20
     keccak256(&buf)
 }
 
-fn eip712_digest(domain: &[u8; 32], struct_hash: &[u8; 32]) -> [u8; 32] {
+/// `keccak256(0x19 0x01 || domainSeparator || structHash)`. `pub(crate)` for the
+/// same reason as [`domain_separator`].
+pub(crate) fn eip712_digest(domain: &[u8; 32], struct_hash: &[u8; 32]) -> [u8; 32] {
     let mut buf = [0u8; 66];
     buf[0] = 0x19;
     buf[1] = 0x01;
     buf[2..34].copy_from_slice(domain);
     buf[34..66].copy_from_slice(struct_hash);
     keccak256(&buf)
+}
+
+/// Recover the address that signed `digest`, from a raw 65-byte `r‖s‖v`
+/// signature.
+///
+/// **This is the crate's ONE secp256k1 recovery path**, and every caller goes
+/// through it: [`recover_and_match`] below (the hex-string, expected-wallet
+/// shape the Bind/Enroll relayer wants) and `crate::proxy::verify` (which
+/// recovers three different parties against three different digests and cannot
+/// use the expected-wallet shape, because two of the three expected signers are
+/// looked up *from* the recovered value's context). Growing a second
+/// `recover_address_from_prehash` call site elsewhere in the crate would mean
+/// two places for the `v`-normalisation rule to be wrong.
+///
+/// `v` is accepted as `27`/`28` or `0`/`1` — alloy's `Signature` normalises
+/// both, which `v_parity_0_1_also_accepted_when_normalized` pins.
+pub(crate) fn recover_signer(digest: &[u8; 32], signature: &[u8]) -> Result<[u8; 20], SigError> {
+    if signature.len() != 65 {
+        return Err(SigError::Malformed);
+    }
+    let sig = Signature::try_from(signature).map_err(|_| SigError::Malformed)?;
+    let prehash = B256::from_slice(digest);
+    let recovered: Address = sig
+        .recover_address_from_prehash(&prehash)
+        .map_err(|_| SigError::RecoverFailed)?;
+    Ok(recovered.into_array())
 }
 
 fn recover_and_match(
@@ -133,12 +169,7 @@ fn recover_and_match(
     signature_hex: &str,
 ) -> Result<(), SigError> {
     let sig_bytes = decode_sig65(signature_hex)?;
-    let sig = Signature::try_from(sig_bytes.as_slice()).map_err(|_| SigError::Malformed)?;
-    let prehash = B256::from_slice(digest);
-    let recovered: Address = sig
-        .recover_address_from_prehash(&prehash)
-        .map_err(|_| SigError::RecoverFailed)?;
-    let got = recovered.into_array();
+    let got = recover_signer(digest, &sig_bytes)?;
     if got != wallet {
         return Err(SigError::SignerMismatch {
             expected: normalize_wallet_hex(wallet_hex),
@@ -187,13 +218,24 @@ fn normalize_wallet_hex(s: &str) -> String {
     format!("0x{}", hex.to_ascii_lowercase())
 }
 
-fn address_word(wallet: &[u8; 20]) -> [u8; 32] {
+/// An address left-padded into one 32-byte word. `pub(crate)` alongside the
+/// three helpers above, for the same reason: the alternative is a fifth private
+/// copy of a four-line left-pad.
+pub(crate) fn address_word(wallet: &[u8; 20]) -> [u8; 32] {
     let mut w = [0u8; 32];
     w[12..].copy_from_slice(wallet);
     w
 }
 
-fn u256_be(v: u128) -> [u8; 32] {
+/// A `uint256` word, big-endian and right-aligned.
+///
+/// **This is the canonical `u256_be` for the crate**, and the one every
+/// fetch-network module imports. Four other private copies exist
+/// (`chain.rs:880`, `stream_g/base_fee.rs:295`,
+/// `stream_g/root_authorization.rs:491`, and a `pub(crate)` one at
+/// `stream_g/models.rs:299`); deduplicating those is a separate change and is
+/// deliberately not done here.
+pub(crate) fn u256_be(v: u128) -> [u8; 32] {
     let mut w = [0u8; 32];
     w[16..].copy_from_slice(&v.to_be_bytes());
     w

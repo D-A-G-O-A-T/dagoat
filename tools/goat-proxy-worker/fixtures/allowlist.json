@@ -1,0 +1,30 @@
+{
+  "schema_id": "GOAT_PROXY_ALLOWLIST_V1",
+  "note": "PLACEHOLDER, NOT A PILOT LIST. Every host below is an IANA-reserved documentation domain (RFC 2606 / RFC 6761), chosen precisely because none of them is a real third party whose terms of service anyone has read. This file exists so the loader, the digest and the path-scope matcher have a shipped artifact to be tested against; it is not a statement that any destination has been cleared for traffic. A real list is a governance decision, it names no authentication endpoint, and it does not land here. Design authority: the 'Residential Proxy Network - Worker & Tunnel Spec (Tasks 18-36, 44, 45, 47)', Task 29.",
+  "entries": [
+    {
+      "id": 1,
+      "host": "example.com",
+      "match_mode": "exact",
+      "path_scope": "prefixes",
+      "path_prefixes": ["/data/"],
+      "max_requests_per_minute": 30
+    },
+    {
+      "id": 2,
+      "host": "example.org",
+      "match_mode": "exact",
+      "path_scope": "prefixes",
+      "path_prefixes": ["/api/v1/", "/static/"],
+      "max_requests_per_minute": 30
+    },
+    {
+      "id": 3,
+      "host": "research.example.net",
+      "match_mode": "exact",
+      "path_scope": "prefixes",
+      "path_prefixes": ["/open-data/"],
+      "max_requests_per_minute": 10
+    }
+  ]
+}

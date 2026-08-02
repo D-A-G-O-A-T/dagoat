@@ -186,6 +186,21 @@ test('feeScheduleHash: JS reproduces the Rust known-answer bytes and hash', () =
   );
 });
 
+// The canonical length of the shipped fee-schedule payload, DERIVED from the
+// canonicaliser above rather than added up by hand. The three residential-proxy
+// rows added 2026-07-31 cost 372 of these bytes:
+//
+//   GOAT_STREAM_G_PROXY_CLAIM_V1             L=28  -> 3L+22 = 106
+//   GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1     L=36  -> 3L+22 = 130
+//   GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1   L=38  -> 3L+22 = 136
+//
+// (each name appears once per action map: `,"K":null` in actionFeesRaw is L+8,
+// and `,"K":"0"` in each of gasUnitCeilings and calldataByteCeilings is L+7.)
+// 728 + 372 = 1100. A mismatch here means a row was mis-encoded — a renamed
+// key, a value that is not null/"0", or a fourth map — not that somebody added
+// up three guesses. The Rust twin is `quotes.rs`'s SHIPPED_CANONICAL_BYTES.
+const EXPECTED_FEE_SCHEDULE_BYTES = 1100;
+
 test('feeScheduleHash: JS reproduces the SHIPPED schedule bytes and hash', () => {
   const path = resolve(REPO_ROOT, 'tools/goat-attestor/fixtures/stream_g_fee_schedule.json');
   const file = JSON.parse(readFileSync(path, 'utf8'));
@@ -213,16 +228,25 @@ test('feeScheduleHash: JS reproduces the SHIPPED schedule bytes and hash', () =>
   // not a restatement of whatever the file happens to contain today.
   const EXPECTED_BYTES =
     '{"actionFeesRaw":{"GOAT_STREAM_G_GOAT_TRANSFER_V1":null,' +
+    '"GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1":null,' +
+    '"GOAT_STREAM_G_PROXY_CLAIM_V1":null,' +
+    '"GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1":null,' +
     '"GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1":null,' +
     '"GOAT_STREAM_G_SPONSORED_SELL_V1":null,' +
     '"GOAT_STREAM_G_USDT_TRANSFER_V1":null},' +
     '"calldataByteCeilings":{"GOAT_STREAM_G_GOAT_TRANSFER_V1":"0",' +
+    '"GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1":"0",' +
+    '"GOAT_STREAM_G_PROXY_CLAIM_V1":"0",' +
+    '"GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1":"0",' +
     '"GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1":"0",' +
     '"GOAT_STREAM_G_SPONSORED_SELL_V1":"0",' +
     '"GOAT_STREAM_G_USDT_TRANSFER_V1":"0"},' +
     '"chainId":"31337","decimals":"6",' +
     '"feeToken":"0xddc10602782af652bb913f7bde1fd82981db7dd9",' +
     '"gasUnitCeilings":{"GOAT_STREAM_G_GOAT_TRANSFER_V1":"0",' +
+    '"GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1":"0",' +
+    '"GOAT_STREAM_G_PROXY_CLAIM_V1":"0",' +
+    '"GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1":"0",' +
     '"GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1":"0",' +
     '"GOAT_STREAM_G_SPONSORED_SELL_V1":"0",' +
     '"GOAT_STREAM_G_USDT_TRANSFER_V1":"0"},' +
@@ -230,10 +254,14 @@ test('feeScheduleHash: JS reproduces the SHIPPED schedule bytes and hash', () =>
     '"validAfter":"0","validUntil":"0"}';
 
   assert.equal(bytes, EXPECTED_BYTES, 'JS canonical bytes differ from the Rust fixture');
-  assert.equal(bytes.length, 728, 'canonical byte length is part of the fixture');
+  assert.equal(
+    bytes.length,
+    EXPECTED_FEE_SCHEDULE_BYTES,
+    'canonical byte length is part of the fixture',
+  );
 
   // The digest the Rust side computes, pinned as a literal for the same reason.
-  const EXPECTED_HASH = '0x1c663d43fccc550dd95ef9dcd469eb12ac98006d355fea4ce9fcdc002ff8d952';
+  const EXPECTED_HASH = '0x2681f70d84c3a644290b622f42fc1fa6977c66da4343213f9967c8204ad91bf2';
   assert.equal(feeScheduleHashOf(file.payload), EXPECTED_HASH);
 
   // The file must declare the digest of its own payload, or `goat-attestor`
@@ -248,10 +276,30 @@ test('feeScheduleHash: JS reproduces the SHIPPED schedule bytes and hash', () =>
     assert.equal(artifact.feeScheduleHash, EXPECTED_HASH);
   }
 
-  // The canonical byte length is 728 ASCII characters, so `.length` (UTF-16 code
-  // units) and the UTF-8 byte count coincide. Asserted rather than assumed,
-  // because the Rust fixture pins 728 BYTES.
-  assert.equal(new TextEncoder().encode(bytes).length, 728);
+  // The canonical byte length is EXPECTED_FEE_SCHEDULE_BYTES ASCII characters,
+  // so `.length` (UTF-16 code units) and the UTF-8 byte count coincide.
+  // Asserted rather than assumed, because the Rust fixture pins BYTES.
+  assert.equal(new TextEncoder().encode(bytes).length, EXPECTED_FEE_SCHEDULE_BYTES);
+
+  // Adding a row MOVES the digest. Asserted here rather than argued, because
+  // the whole cost of this task is that it does: a schedule that gained a
+  // tariff key and kept its hash would let a gateway accept quotes against a
+  // document nobody approved. Removing one of the three proxy rows must move
+  // it too, in the other direction — that is the same claim from the far side,
+  // and it is what pins these three rows as MEMBERS of the digest rather than
+  // decoration next to it.
+  const withExtraRow = JSON.parse(JSON.stringify(file.payload));
+  withExtraRow.actionFeesRaw.GOAT_STREAM_G_PROXY_SETTLE_V1 = null;
+  assert.notEqual(feeScheduleHashOf(withExtraRow), EXPECTED_HASH);
+
+  const withoutProxyClaim = JSON.parse(JSON.stringify(file.payload));
+  delete withoutProxyClaim.actionFeesRaw.GOAT_STREAM_G_PROXY_CLAIM_V1;
+  assert.notEqual(feeScheduleHashOf(withoutProxyClaim), EXPECTED_HASH);
+  assert.equal(
+    canonicalizeSchedulePayload(withoutProxyClaim).length,
+    EXPECTED_FEE_SCHEDULE_BYTES - (28 + 8),
+    'dropping one actionFeesRaw key costs exactly `,"K":null` = L+8 bytes',
+  );
 });
 
 test('feeScheduleHash: JS refuses exactly what the Rust canonicaliser refuses', () => {
@@ -503,13 +551,13 @@ test('deploymentManifestHash: JS reproduces the SHIPPED payload bytes and hash',
     '"RECOVERY_SAFE":"0xb8705214e170151048eff0a1ede1824fff19cb9c"},' +
     '"chainId":"31337","contracts":{' +
     '"FEE_TOKEN_REGISTRY":{"address":"0x7fdb3132ff7d02d8b9e221c61cc895ce9a4bb773",' +
-    '"runtimeCodeHash":"0xfba313e548e577b7511cbde7326a5afb713940d7c9d9de7f46e28df26ebf3b75"},' +
+    '"runtimeCodeHash":"0xa3e703adb765c2b8ad12a7819e1ed9cf9979de3948eb1524f1b135218818b267"},' +
     '"GATEWAY":{"address":"0x4ff05a443250a64a18c68cedd2122cfdf3872140",' +
-    '"runtimeCodeHash":"0x474ebb2bf11d1462c26e0d5dab9cd8d326b81094d44041f43e31c143976531db"},' +
+    '"runtimeCodeHash":"0xca8f48c69161395035384361f0afd5bee12dfa522b40ba6d1fd004ff0305ec28"},' +
     '"SPONSORED_BUY_DESK":{"address":"0xd76ffbd1eff76c510c3a509fe22864688ac3a588",' +
-    '"runtimeCodeHash":"0xb31c7ccddd6577c6d2ac9ebdd3f3cd9f95d320198eade02a9e387277c6d36dae"},' +
+    '"runtimeCodeHash":"0x896e435114762867374be68db98d14b7b232784323565db6fe0d22b46f6979c7"},' +
     '"WALLET_SPONSORSHIP_REGISTRY":{"address":"0xfd07c974e33dd1626640ba3a5acf0418faacca7a",' +
-    '"runtimeCodeHash":"0xdd985541ff21871feeeabdcc70ae3ce65a1f7f5b1bbf8249e1aa8ec170b735d4"}},' +
+    '"runtimeCodeHash":"0xaa3409e5cfa57015eb51bcc135a3fab5731feeb624dab600b22b6fc203c61067"}},' +
     '"deploymentVersion":"1","releaseCommit":"0000000000000000000000000000000000000000",' +
     '"schemaVersion":"2"}';
 
@@ -517,7 +565,7 @@ test('deploymentManifestHash: JS reproduces the SHIPPED payload bytes and hash',
   assert.equal(bytes.length, 1282, 'canonical byte length is part of the fixture');
   assert.equal(new TextEncoder().encode(bytes).length, 1282);
 
-  const EXPECTED_HASH = '0x05f8b33ddff7855f64c5f38553cadea8648f5d1889ca17624a59f9f507d26491';
+  const EXPECTED_HASH = '0xd888dfcea8b9ad292dab408ae0a81e84752506668d813aff10ea901e44c8a65f';
   assert.equal(deploymentManifestHashOf(file.payload), EXPECTED_HASH);
 
   // The file must declare the digest of its own payload, or `goat-attestor`

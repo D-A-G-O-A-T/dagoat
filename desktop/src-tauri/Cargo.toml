@@ -68,3 +68,16 @@ hex = "0.4"
 # arbitrary Windows install, and hand-editing the SQLite B-tree file format without a real SQLite
 # engine risks corrupting the file, which the design explicitly forbids.
 rusqlite = { version = "0.40", features = ["bundled"] }
+
+# --- Residential bandwidth sidecar: the ONE spawn path, imported not reimplemented ---
+#
+# `desktop/src-tauri/src/proxy/supervisor.rs` drives
+# `goat_proxy_worker::supervisor::ProxySupervisor::spawn_pinned`, and imports
+# `KILL_DEADLINE_MS`, `SocketsAfter`, `CMD_HALT` and `SpawnConfig` rather than
+# redeclaring any of them. A five-second deadline that is 5_000 in one crate and 5 in
+# the other is drift no test either crate can write alone would catch.
+#
+# The dependency direction is desktop -> sidecar and must stay that way. Nothing in the
+# sidecar knows this crate exists, and nothing here relaxes the DENYING `goat-worker`'s
+# own network policy: that is a different binary in a different tree.
+goat-proxy-worker = { path = "../../tools/goat-proxy-worker" }

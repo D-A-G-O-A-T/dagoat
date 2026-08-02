@@ -84,6 +84,12 @@ const MIGRATIONS: &[Migration] = &[
         description: "Stream G reconciliation scan cursor (stream_g_scan_cursors)",
         sql: include_str!("../../migrations/0003_stream_g_scan_cursor.sql"),
     },
+    Migration {
+        version: 4,
+        description: "fetch-network receipts (intents/receipts/meter commitments/epoch \
+                      totals/epoch batches, plus the two replay indexes)",
+        sql: include_str!("../../migrations/0004_proxy_receipts.sql"),
+    },
 ];
 
 /// SHA-256 of every file in [`MIGRATIONS`], by version, pinned so an edit to a
@@ -113,6 +119,10 @@ const MIGRATION_SHA256: &[(i64, &str)] = &[
         3,
         "c9797c54380685434fe649bf083552ae49a9ff17dc6a51169f64b8420cc4668e",
     ),
+    (
+        4,
+        "0d5f3ec2ba0e39669714145eea5a99be0dad3408e7bb3803a0dd778590a94894",
+    ),
 ];
 
 /// Highest migration version this build can apply — i.e. the version it
@@ -126,12 +136,15 @@ const MIGRATION_SHA256: &[(i64, &str)] = &[
 /// [`StreamGStoreError::SchemaVersionTooNew`]. There is no down migration.
 /// `2 → 3` (the reconciliation scan cursor) was taken deliberately, because the
 /// alternative — a background log observer with no durable cursor — rescans
-/// from the gateway deploy block on every pass.
+/// from the gateway deploy block on every pass. `3 → 4` adds the fetch-network
+/// receipt tables; it is additive only (five new tables, four new indexes,
+/// nothing existing touched), which `migration_0004_is_frozen_and_additive`
+/// asserts as a property a hash cannot express.
 ///
 /// This does **not** touch [`ENVELOPE_AAD_SCHEMA_VERSION`], which stays pinned
 /// at 1. See that constant: coupling the two would make every `_enc` column
 /// sealed before the upgrade permanently undecryptable.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Version stamped into every [`EnvelopeAad`] this store hands out.
 ///
@@ -1211,7 +1224,7 @@ mod tests {
             .await
             .expect("count migrations");
         assert_eq!(
-            count, 3,
+            count, 4,
             "each migration must record exactly one row, not be reapplied"
         );
 
@@ -1235,7 +1248,7 @@ mod tests {
                 .expect("list migration versions");
         assert_eq!(
             versions,
-            vec![1, 2, 3],
+            vec![1, 2, 3, 4],
             "schema_migrations must record every applied version exactly once"
         );
     }
@@ -1451,16 +1464,16 @@ mod tests {
         // `apply_migration_if_needed` writes from `MIGRATIONS`' last entry and
         // never from `SCHEMA_VERSION` — so the pair below also catches
         // `SCHEMA_VERSION` drifting away from the migration list.
-        assert_eq!(store.schema_version(), 3, "current schema is v3 (0003)");
+        assert_eq!(store.schema_version(), 4, "current schema is v4 (0004)");
         assert_eq!(
-            SCHEMA_VERSION, 3,
+            SCHEMA_VERSION, 4,
             "SCHEMA_VERSION must match what a freshly opened store reports"
         );
 
         // The two versions are genuinely different values on this build, so the
         // `aad.schema_version` assertion above is not `x == x` in disguise: a
-        // fresh store is at 3 (migration 0003 added the reconciliation scan
-        // cursor) while envelopes are still stamped 1. If a later build ever
+        // fresh store is at 4 (migration 0004 added the fetch-network receipt
+        // tables) while envelopes are still stamped 1. If a later build ever
         // makes these equal again, this fails and forces a conscious re-read of
         // `ENVELOPE_AAD_SCHEMA_VERSION`'s doc comment rather than letting the
         // distinction silently stop being tested.
@@ -1518,6 +1531,65 @@ mod tests {
                 "migration {version} is FROZEN — add a new numbered migration \
                  instead of editing it"
             );
+        }
+    }
+
+    /// Mutations this detects: editing an already-applied migration in place, and
+    /// adding `0004` to `MIGRATIONS` without adding its hash to `MIGRATION_SHA256`
+    /// (which would leave the new file unfrozen -- exactly how `0003` shipped
+    /// unfrozen under the older single-file assertion).
+    #[test]
+    fn migration_0004_is_frozen_and_additive() {
+        // `every_migration_is_byte_identical` already covers hashes. This adds the
+        // additive-only property, which a hash cannot express.
+        let sql = MIGRATIONS
+            .iter()
+            .find(|m| m.version == 4)
+            .expect("0004 must be registered")
+            .sql;
+        for forbidden in [
+            "ALTER TABLE",
+            "DROP TABLE",
+            "DROP INDEX",
+            "UPDATE ",
+            "DELETE FROM",
+        ] {
+            assert!(
+                !sql.to_ascii_uppercase().contains(forbidden),
+                "0004 must be additive; found {forbidden}"
+            );
+        }
+        // Positive control: it does create the tables it claims to.
+        for table in [
+            "proxy_session_intents",
+            "proxy_receipts",
+            "proxy_meter_commitments",
+            "proxy_epoch_totals",
+            "proxy_epoch_batches",
+        ] {
+            assert!(
+                sql.contains(&format!("CREATE TABLE {table}")),
+                "0004 must create {table}"
+            );
+        }
+        assert_eq!(supported_schema_version(), 4);
+
+        // Second positive control, for the additive sweep itself: the same
+        // detector must fire on SQL that really is destructive. Without it the
+        // five refusals above also pass against an empty `sql`.
+        let planted = format!("{sql}\nALTER TABLE proxy_receipts ADD COLUMN x TEXT;\n");
+        assert!(
+            planted.to_ascii_uppercase().contains("ALTER TABLE"),
+            "the additive sweep cannot see a table alteration; its silence proves nothing"
+        );
+
+        // The two replay indexes are the defence, so their absence is a schema
+        // change and not a performance regression.
+        for index in [
+            "CREATE UNIQUE INDEX proxy_receipts_session_chunk",
+            "CREATE UNIQUE INDEX proxy_receipts_operator_counter",
+        ] {
+            assert!(sql.contains(index), "0004 must declare {index}");
         }
     }
 
@@ -1643,6 +1715,20 @@ mod tests {
             .await
             .expect("0003 scan-cursor table missing after upgrade");
 
+        // 0004's five tables, named individually for the same reason.
+        for sql in [
+            "SELECT intent_hash_hex, max_bytes FROM proxy_session_intents",
+            "SELECT receipt_hash_hex, bytes_transferred, counter FROM proxy_receipts",
+            "SELECT gateway_id_hex, witnessed_bytes_to_consumer FROM proxy_meter_commitments",
+            "SELECT epoch_id, operator_wallet, take_bps FROM proxy_epoch_totals",
+            "SELECT epoch_id, merkle_root_hex, status FROM proxy_epoch_batches",
+        ] {
+            sqlx::query(sql)
+                .fetch_all(&store.pool)
+                .await
+                .unwrap_or_else(|e| panic!("0004 table missing after upgrade ({sql}): {e}"));
+        }
+
         // Every migration is recorded, in order — an upgrade must not
         // rewrite history for `0001`.
         //
@@ -1655,7 +1741,7 @@ mod tests {
                 .fetch_all(&store.pool)
                 .await
                 .expect("list versions");
-        assert_eq!(versions, vec![1, 2, 3]);
+        assert_eq!(versions, vec![1, 2, 3, 4]);
     }
 
     /// The reason `ENVELOPE_AAD_SCHEMA_VERSION` exists.

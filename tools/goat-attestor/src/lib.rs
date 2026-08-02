@@ -35,6 +35,7 @@ pub mod http_live;
 mod license_audit;
 pub mod merkle;
 pub mod proposer;
+pub mod proxy;
 pub mod rate_limit;
 pub mod registry;
 pub mod relayer;

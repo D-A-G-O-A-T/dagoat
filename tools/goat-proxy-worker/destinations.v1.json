@@ -1,0 +1,15 @@
+{
+  "schema_id": "GOAT_PROXY_DESTINATION_REGISTRY_V1",
+  "note": "THE CANONICAL DESTINATION REGISTRY. One static, one-to-one mapping between a destination SLUG and the u32 id the daemon carries in receipts, pinned targets, the robots cache key and its logs. This file is the ONLY definition of that mapping: the sidecar embeds it, the desktop's Rust half reads it through the sidecar crate rather than declaring a second copy, and the desktop's JavaScript mirror is compared against these exact bytes by a test that refuses to pass on drift. Ids are PERMANENT and are never reused: a slug's id is its identity for the life of the project, so the registry grows only by appending the next integer. Ids must stay contiguous from 1, must be unique, and slugs must be unique -- all four are asserted, in Rust and in JavaScript. Rows tagged as documentation destinations name IANA-reserved documentation domains (RFC 2606 / RFC 6761) and exist so the loader, the digest and the test fixtures have registered ids to use; they are not a statement that any destination has been cleared for traffic. Design authority: the 'Residential Proxy Network - Worker & Tunnel Spec (Tasks 18-36, 44, 45, 47)', Task 29.",
+  "destinations": [
+    { "id": 1, "slug": "documentation-example-com" },
+    { "id": 2, "slug": "documentation-example-org" },
+    { "id": 3, "slug": "documentation-research-example-net" },
+    { "id": 4, "slug": "crossref-api" },
+    { "id": 5, "slug": "openalex-api" },
+    { "id": 6, "slug": "datacite-api" },
+    { "id": 7, "slug": "europepmc-api" },
+    { "id": 8, "slug": "rcsb-files" },
+    { "id": 9, "slug": "documentation-other-example" }
+  ]
+}

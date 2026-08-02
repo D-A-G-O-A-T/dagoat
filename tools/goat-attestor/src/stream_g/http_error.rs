@@ -517,7 +517,10 @@ pub(crate) fn max_submit_request_json_with_inline_quote() -> String {
             "quote_deployment_manifest_hash_hex",
             serde_json::json!(bytes32),
         ),
-        ("quote_fee_token_config_hash_hex", serde_json::json!(bytes32)),
+        (
+            "quote_fee_token_config_hash_hex",
+            serde_json::json!(bytes32),
+        ),
         ("fee_schedule_hash_hex", serde_json::json!(bytes32)),
         ("payer_address", serde_json::json!(address)),
         ("quote_fee_token_address", serde_json::json!(address)),
@@ -890,9 +893,9 @@ mod tests {
         // exactly these two inner variants and no other.
         push!(
             "SubmitError::Broadcaster(Chain)",
-            SubmitError::Broadcaster(
-                crate::stream_g::broadcaster::BroadcasterError::Chain(m.clone())
-            )
+            SubmitError::Broadcaster(crate::stream_g::broadcaster::BroadcasterError::Chain(
+                m.clone()
+            ))
         );
         push!(
             "SubmitError::Broadcaster(NonceRowConflict)",

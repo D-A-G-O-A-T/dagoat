@@ -11,6 +11,10 @@
 //! Miner UI renders from, a trait-object registry, and thin Tauri command wrappers over it. Real
 //! FAH control (Task S6) and chain/tab content (S7–S9) land in later tasks.
 
+/// `pub`, not private: `tests/caps_survive_ui_kill.rs` is an integration test in a
+/// separate crate and reaches `dagoat_lib::proxy::limits`, which a private module
+/// makes unreachable.
+pub mod proxy;
 mod wallet;
 mod workbackend;
 
@@ -270,6 +274,10 @@ pub fn run() {
         // stronghold plugin is registered, so nothing is a decoy.
         .manage(workbackend::build_registry())
         .manage(WalletState::default())
+        // The bandwidth supervisor. Registered directly, NOT through the WorkBackend
+        // registry: that plane is the supply-creating public-good catalog, and
+        // bandwidth sharing creates no GOAT.
+        .manage(proxy::ProxySupervisor::default())
         .invoke_handler(tauri::generate_handler![
             ping,
             wallet::wallet_list,
@@ -304,6 +312,16 @@ pub fn run() {
             backend_fah_identity,
             backend_start_engine,
             backend_stop_engine,
+            proxy::backend_proxy_available,
+            proxy::backend_proxy_policy,
+            proxy::backend_proxy_consent_status,
+            proxy::backend_proxy_consent_grant,
+            proxy::backend_proxy_consent_revoke,
+            proxy::backend_proxy_limits,
+            proxy::backend_proxy_set_limits,
+            proxy::backend_proxy_status,
+            proxy::backend_proxy_egress_log,
+            proxy::backend_proxy_kill,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {
@@ -328,13 +346,15 @@ pub fn run() {
                         );
                     }
                 }
-                tauri::RunEvent::WindowEvent { label, event, .. } => {
-                    if let tauri::WindowEvent::CloseRequested { .. } = event {
-                        append_app_log(
-                            "exit.log",
-                            &format!("WindowEvent::CloseRequested label={label}"),
-                        );
-                    }
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::CloseRequested { .. },
+                    ..
+                } => {
+                    append_app_log(
+                        "exit.log",
+                        &format!("WindowEvent::CloseRequested label={label}"),
+                    );
                 }
                 _ => {}
             }

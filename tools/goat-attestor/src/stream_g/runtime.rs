@@ -1881,7 +1881,7 @@ pub(crate) mod test_support {
     /// pins the same digest from the file's side, and additionally pins the
     /// canonical bytes.
     pub(crate) const FIXTURE_FEE_SCHEDULE_HASH: &str =
-        "0x1c663d43fccc550dd95ef9dcd469eb12ac98006d355fea4ce9fcdc002ff8d952";
+        "0x2681f70d84c3a644290b622f42fc1fa6977c66da4343213f9967c8204ad91bf2";
 
     /// The `deploymentManifestHash` [`manifest_json`] publishes.
     ///
@@ -1905,7 +1905,7 @@ pub(crate) mod test_support {
     /// `deployment_payload::tests::shipped_deployment_payload_is_published_and_binds_the_manifest`
     /// fails instead of every fixture silently re-agreeing with itself.
     pub(crate) const FIXTURE_DEPLOYMENT_MANIFEST_HASH: &str =
-        "0x05f8b33ddff7855f64c5f38553cadea8648f5d1889ca17624a59f9f507d26491";
+        "0xd888dfcea8b9ad292dab408ae0a81e84752506668d813aff10ea901e44c8a65f";
 
     /// The standard fixture payload: the eleven published fields, with every
     /// ceiling and the exposure ceiling at `"0"` and no tariff set unless
@@ -1961,19 +1961,28 @@ pub(crate) mod test_support {
                     "GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1": {enrollment},
                     "GOAT_STREAM_G_SPONSORED_SELL_V1": null,
                     "GOAT_STREAM_G_GOAT_TRANSFER_V1": null,
-                    "GOAT_STREAM_G_USDT_TRANSFER_V1": null
+                    "GOAT_STREAM_G_USDT_TRANSFER_V1": null,
+                    "GOAT_STREAM_G_PROXY_CLAIM_V1": null,
+                    "GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1": null,
+                    "GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1": null
                 }},
                 "gasUnitCeilings": {{
                     "GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1": "0",
                     "GOAT_STREAM_G_SPONSORED_SELL_V1": "0",
                     "GOAT_STREAM_G_GOAT_TRANSFER_V1": "0",
-                    "GOAT_STREAM_G_USDT_TRANSFER_V1": "0"
+                    "GOAT_STREAM_G_USDT_TRANSFER_V1": "0",
+                    "GOAT_STREAM_G_PROXY_CLAIM_V1": "0",
+                    "GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1": "0",
+                    "GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1": "0"
                 }},
                 "calldataByteCeilings": {{
                     "GOAT_STREAM_G_SPONSORED_ENROLLMENT_V1": "0",
                     "GOAT_STREAM_G_SPONSORED_SELL_V1": "0",
                     "GOAT_STREAM_G_GOAT_TRANSFER_V1": "0",
-                    "GOAT_STREAM_G_USDT_TRANSFER_V1": "0"
+                    "GOAT_STREAM_G_USDT_TRANSFER_V1": "0",
+                    "GOAT_STREAM_G_PROXY_CLAIM_V1": "0",
+                    "GOAT_STREAM_G_PROXY_PROPOSE_BATCH_V1": "0",
+                    "GOAT_STREAM_G_PROXY_CHALLENGE_BATCH_V1": "0"
                 }},
                 "maxNativeExposureWei": "0"
             }}"#
@@ -2046,14 +2055,26 @@ pub(crate) mod test_support {
         account_override: Option<(&str, &str)>,
     ) -> String {
         let mut accounts: Vec<(&str, String)> = vec![
-            ("DESK_OWNER", "0x7fa9385be102ac3eac297483dd6233d62b3e1496".into()),
+            (
+                "DESK_OWNER",
+                "0x7fa9385be102ac3eac297483dd6233d62b3e1496".into(),
+            ),
             (
                 "ENROLLMENT_REGISTRY",
                 "0x104fbc016f4bb334d775a19e8a6510109ac63e00".into(),
             ),
-            ("FEE_SAFE", "0xd1ccc21678e1b7015a472216b2f501f421645b43".into()),
-            ("FEE_TOKEN", "0xddc10602782af652bb913f7bde1fd82981db7dd9".into()),
-            ("GOAT_COIN", "0x037eda3adb1198021a9b2e88c22b464fd38db3f3".into()),
+            (
+                "FEE_SAFE",
+                "0xd1ccc21678e1b7015a472216b2f501f421645b43".into(),
+            ),
+            (
+                "FEE_TOKEN",
+                "0xddc10602782af652bb913f7bde1fd82981db7dd9".into(),
+            ),
+            (
+                "GOAT_COIN",
+                "0x037eda3adb1198021a9b2e88c22b464fd38db3f3".into(),
+            ),
             (
                 "POLICY_SAFE",
                 "0x7fa9385be102ac3eac297483dd6233d62b3e1496".into(),
@@ -2116,7 +2137,11 @@ pub(crate) mod test_support {
 
     /// [`deployment_payload_body`] with every field at its lab default.
     pub(crate) fn default_deployment_payload_body() -> String {
-        deployment_payload_body("31337", &FIXTURE_GATEWAY.to_ascii_lowercase(), FIXTURE_GATEWAY_CODE_HASH)
+        deployment_payload_body(
+            "31337",
+            &FIXTURE_GATEWAY.to_ascii_lowercase(),
+            FIXTURE_GATEWAY_CODE_HASH,
+        )
     }
 
     /// The `{schemaVersion, deploymentManifestHash, note, payload}` container.
@@ -2145,8 +2170,9 @@ pub(crate) mod test_support {
             "0x0000000000000000000000000000000000000000000000000000000000000000",
             payload_json,
         );
-        let loaded = super::super::deployment_payload::DeploymentPayload::from_json(&doc, "<fixture>")
-            .expect("fixture payload must load");
+        let loaded =
+            super::super::deployment_payload::DeploymentPayload::from_json(&doc, "<fixture>")
+                .expect("fixture payload must load");
         format!(
             "0x{}",
             hex::encode(loaded.computed_deployment_manifest_hash())
@@ -2164,7 +2190,12 @@ pub(crate) mod test_support {
         let hash = deployment_manifest_hash_hex(payload_json);
         std::fs::write(
             dir.join("manifest.json"),
-            manifest_json_with(chain_id, &hash, FIXTURE_FEE_SCHEDULE_HASH, goat_relay_gateway),
+            manifest_json_with(
+                chain_id,
+                &hash,
+                FIXTURE_FEE_SCHEDULE_HASH,
+                goat_relay_gateway,
+            ),
         )
         .unwrap();
         std::fs::write(
@@ -2907,7 +2938,9 @@ mod tests {
     /// them. The `matches!` assertion below fails on exactly that swap.
     #[tokio::test]
     async fn start_refuses_a_fee_schedule_whose_payload_does_not_match_its_declared_hash() {
-        use super::test_support::{fee_schedule_json, schedule_payload_json, FIXTURE_FEE_SCHEDULE_HASH};
+        use super::test_support::{
+            fee_schedule_json, schedule_payload_json, FIXTURE_FEE_SCHEDULE_HASH,
+        };
 
         let dir = tempfile::tempdir().unwrap();
         let map = enabled_map(dir.path());
@@ -3007,9 +3040,8 @@ mod tests {
             "the file's own digest must be shown: {rendered}"
         );
         assert!(
-            rendered.contains(
-                super::test_support::FIXTURE_FEE_SCHEDULE_HASH.trim_start_matches("0x")
-            ),
+            rendered
+                .contains(super::test_support::FIXTURE_FEE_SCHEDULE_HASH.trim_start_matches("0x")),
             "the manifest's published digest must be shown: {rendered}"
         );
 
@@ -3200,7 +3232,8 @@ mod tests {
         use super::test_support::{manifest_json, schedule_payload_json};
 
         assert!(
-            manifest_json(31337).contains("\"feeToken\": \"0xDDc10602782af652bB913f7bdE1fD82981Db7dd9\""),
+            manifest_json(31337)
+                .contains("\"feeToken\": \"0xDDc10602782af652bB913f7bdE1fD82981Db7dd9\""),
             "precondition: the manifest fixture spells the fee token checksummed"
         );
         assert!(
@@ -3283,9 +3316,8 @@ mod tests {
     #[tokio::test]
     async fn start_refuses_a_deployment_payload_whose_address_was_edited() {
         use super::test_support::{
-            default_deployment_payload_body, deployment_manifest_hash_hex,
-            deployment_payload_body, deployment_payload_json, FIXTURE_GATEWAY,
-            FIXTURE_GATEWAY_CODE_HASH,
+            default_deployment_payload_body, deployment_manifest_hash_hex, deployment_payload_body,
+            deployment_payload_json, FIXTURE_GATEWAY, FIXTURE_GATEWAY_CODE_HASH,
         };
 
         let dir = tempfile::tempdir().unwrap();
@@ -3357,8 +3389,8 @@ mod tests {
     #[tokio::test]
     async fn start_refuses_a_deployment_payload_whose_runtime_code_hash_was_edited() {
         use super::test_support::{
-            default_deployment_payload_body, deployment_manifest_hash_hex,
-            deployment_payload_body, deployment_payload_json, FIXTURE_GATEWAY,
+            default_deployment_payload_body, deployment_manifest_hash_hex, deployment_payload_body,
+            deployment_payload_json, FIXTURE_GATEWAY,
         };
 
         let dir = tempfile::tempdir().unwrap();
@@ -3411,9 +3443,9 @@ mod tests {
     #[tokio::test]
     async fn start_refuses_a_deployment_payload_this_deployment_did_not_publish() {
         use super::test_support::{
-            default_deployment_payload_body, deployment_manifest_hash_hex,
-            deployment_payload_body, deployment_payload_json, manifest_json_with,
-            FIXTURE_FEE_SCHEDULE_HASH, FIXTURE_GATEWAY,
+            default_deployment_payload_body, deployment_manifest_hash_hex, deployment_payload_body,
+            deployment_payload_json, manifest_json_with, FIXTURE_FEE_SCHEDULE_HASH,
+            FIXTURE_GATEWAY,
         };
 
         let dir = tempfile::tempdir().unwrap();
@@ -3463,9 +3495,8 @@ mod tests {
     #[tokio::test]
     async fn start_refuses_a_manifest_naming_an_address_the_payload_never_committed() {
         use super::test_support::{
-            default_deployment_payload_body, deployment_manifest_hash_hex,
-            deployment_payload_json, manifest_json_with, FIXTURE_FEE_SCHEDULE_HASH,
-            FIXTURE_GATEWAY,
+            default_deployment_payload_body, deployment_manifest_hash_hex, deployment_payload_json,
+            manifest_json_with, FIXTURE_FEE_SCHEDULE_HASH, FIXTURE_GATEWAY,
         };
 
         let dir = tempfile::tempdir().unwrap();
@@ -3497,7 +3528,10 @@ mod tests {
         assert!(
             matches!(
                 err,
-                StreamGStartupError::DeploymentManifestAddressMismatch { role: "GATEWAY", .. }
+                StreamGStartupError::DeploymentManifestAddressMismatch {
+                    role: "GATEWAY",
+                    ..
+                }
             ),
             "expected a per-role address mismatch, got: {err}"
         );

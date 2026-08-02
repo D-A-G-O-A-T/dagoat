@@ -71,11 +71,14 @@ enum Commands {
     SyncRegistry,
     /// One full automated cycle: sync registry → propose → warp/confirm/finalize → claim.
     /// Same as `run` with AUTO_SETTLE (default on chain 31337).
-    AutoEarn {
+    // The operator-typed name is frozen: it is the published CLI surface
+    // (README, `--help`) and renaming it would break running deployments.
+    #[command(name = "auto-earn")]
+    SettlementCycle {
         #[arg(long)]
         fixtures: Option<PathBuf>,
     },
-    /// Loop AutoEarn every POLL_INTERVAL_S (fold → GOAT automation daemon).
+    /// Loop the settlement cycle every POLL_INTERVAL_S (fold → GOAT automation daemon).
     Daemon {
         #[arg(long)]
         fixtures: Option<PathBuf>,
@@ -291,8 +294,8 @@ fn main() -> Result<()> {
         Commands::SyncRegistry => {
             cmd_sync_registry(&cfg)?;
         }
-        Commands::AutoEarn { fixtures } => {
-            cmd_auto_earn(&cfg, fixtures)?;
+        Commands::SettlementCycle { fixtures } => {
+            cmd_settlement_cycle(&cfg, fixtures)?;
         }
         Commands::Daemon { fixtures, interval } => {
             cmd_daemon(&cfg, fixtures, interval)?;
@@ -556,6 +559,20 @@ async fn cmd_serve_relayer(cfg: &Config, bind: &str) -> Result<()> {
             Some((controller, maintenance))
         }
     };
+    // Fetch-network revenue lane (TARGET/design): mounted only when the lane is
+    // enabled. `ProxyConfig::validate` already ran UNCONDITIONALLY during config
+    // load — every band is checked whether or not the lane is on — so reaching
+    // the enabled arm means the values are sound. The gate itself lives in
+    // `proxy::routes::mount` rather than here, because an `if` in `main.rs` is
+    // an `if` no test can drive: `the_lane_is_unreachable_while_it_is_disabled`
+    // and `the_three_routes_bind_when_the_lane_is_enabled` drive both arms of
+    // that function.
+    if cfg.proxy.enabled {
+        info!(
+            "fetch-network revenue lane enabled — mounting /v1/proxy/* ([TARGET], no store wired)"
+        );
+    }
+    app = goat_attestor::proxy::routes::mount(app, &cfg.proxy);
     // H6: refuse 0.0.0.0 / LAN binds — origin stays loopback-only (tunnel in front).
     relayer::require_loopback_bind(bind).map_err(|e| anyhow::anyhow!("{e}"))?;
     let listener = tokio::net::TcpListener::bind(bind)
@@ -610,7 +627,7 @@ async fn cmd_serve_relayer(cfg: &Config, bind: &str) -> Result<()> {
 }
 
 fn cmd_run(cfg: &Config, fixtures: Option<PathBuf>) -> Result<()> {
-    cmd_auto_earn(cfg, fixtures)
+    cmd_settlement_cycle(cfg, fixtures)
 }
 
 /// Re-read hasBaseline for every bound worker; return only those with Ok(Some(true)).
@@ -667,10 +684,10 @@ fn gate_workers_with_onchain_baseline(
     gated
 }
 
-/// Core auto-earn cycle (enrollment → on-chain baseline gate → daily).
+/// Core settlement cycle (enrollment → on-chain baseline gate → daily).
 /// Injectable for unit tests (MockChain + FixtureHttp) without env/CLI.
 #[allow(clippy::too_many_arguments)] // evidence_dir + state_dir both required by cycle wiring
-fn run_auto_earn_cycle<H: HttpGet>(
+fn run_settlement_cycle<H: HttpGet>(
     chain: &dyn ChainClient,
     fah: &FahClient<H>,
     reg: &mut WorkerRegistry,
@@ -681,7 +698,7 @@ fn run_auto_earn_cycle<H: HttpGet>(
     auto_warp: bool,
 ) -> anyhow::Result<()> {
     info!(
-        "auto-earn cycle start (auto_settle={} auto_warp={} workers={})",
+        "settlement cycle start (auto_settle={} auto_warp={} workers={})",
         auto_settle,
         auto_warp,
         reg.all_bound().len()
@@ -793,7 +810,7 @@ fn run_auto_earn_cycle<H: HttpGet>(
         } else {
             info!("no workers with on-chain baseline; skip daily batch");
         }
-        info!("auto-earn cycle complete");
+        info!("settlement cycle complete");
         return Ok(());
     }
 
@@ -853,13 +870,13 @@ fn run_auto_earn_cycle<H: HttpGet>(
         }
     }
 
-    info!("auto-earn cycle complete");
+    info!("settlement cycle complete");
     Ok(())
 }
 
 /// Automated fold→GOAT cycle for all bound workers:
 /// sync registry → enrollment snapshot → daily propose → (warp) confirm → finalize → claim.
-fn cmd_auto_earn(cfg: &Config, fixtures: Option<PathBuf>) -> Result<()> {
+fn cmd_settlement_cycle(cfg: &Config, fixtures: Option<PathBuf>) -> Result<()> {
     let chain = open_chain(cfg)?;
     let fah = make_fah(cfg, fixtures)?;
     let _ = sync_registry_from_chain(chain.as_ref(), cfg);
@@ -867,7 +884,7 @@ fn cmd_auto_earn(cfg: &Config, fixtures: Option<PathBuf>) -> Result<()> {
     std::fs::create_dir_all(&cfg.evidence_dir).ok();
     std::fs::create_dir_all(&cfg.state_dir).ok();
 
-    run_auto_earn_cycle(
+    run_settlement_cycle(
         chain.as_ref(),
         &fah,
         &mut reg,
@@ -881,19 +898,19 @@ fn cmd_auto_earn(cfg: &Config, fixtures: Option<PathBuf>) -> Result<()> {
     // Persist enrollment baseline_batched flags after a successful cycle attempt.
     reg.save(&cfg.registry_json).ok();
 
-    info!("auto-earn cycle complete (mock={})", cfg.mock_mode);
+    info!("settlement cycle complete (mock={})", cfg.mock_mode);
     Ok(())
 }
 
 fn cmd_daemon(cfg: &Config, fixtures: Option<PathBuf>, interval: Option<u64>) -> Result<()> {
     let secs = interval.unwrap_or(cfg.poll_interval_s).max(30);
     info!(
-        "daemon started: auto-earn every {secs}s (AUTO_SETTLE={} AUTO_WARP={})",
+        "daemon started: settlement cycle every {secs}s (AUTO_SETTLE={} AUTO_WARP={})",
         cfg.auto_settle, cfg.auto_warp
     );
     loop {
-        if let Err(e) = cmd_auto_earn(cfg, fixtures.clone()) {
-            warn!("auto-earn cycle error: {e}");
+        if let Err(e) = cmd_settlement_cycle(cfg, fixtures.clone()) {
+            warn!("settlement cycle error: {e}");
         }
         info!("daemon sleep {secs}s…");
         std::thread::sleep(Duration::from_secs(secs));
@@ -1269,7 +1286,7 @@ mod tests {
         let mut reg = WorkerRegistry::new();
         reg.upsert(alice_entry(false));
 
-        run_auto_earn_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
+        run_settlement_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
 
         let ops = chain.ops();
         let claims: Vec<_> = ops
@@ -1331,7 +1348,7 @@ mod tests {
             .unwrap();
 
         let result =
-            run_auto_earn_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true);
+            run_settlement_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true);
         assert!(result.is_ok(), "cycle must return Ok: {result:?}");
 
         // Alice should appear in a daily (non-enrollment) claim or propose.
@@ -1398,7 +1415,7 @@ mod tests {
         reg.upsert(alice_entry(false));
         reg.upsert(bob_entry(false));
 
-        run_auto_earn_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
+        run_settlement_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
 
         let claim_epochs: Vec<u64> = chain
             .ops()
@@ -1461,7 +1478,7 @@ mod tests {
         assert_ne!(chain.has_baseline(ALICE).unwrap(), Some(true));
 
         // cycle2: full cycle retries settle, then daily.
-        run_auto_earn_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
+        run_settlement_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
 
         assert_eq!(
             chain.has_baseline(ALICE).unwrap(),
@@ -1508,7 +1525,7 @@ mod tests {
         });
 
         // cycle1: legacy reset only (sweep is after Phase E; no re-propose same cycle).
-        run_auto_earn_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
+        run_settlement_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
         assert!(
             !reg.all_bound()[0].baseline_batched,
             "legacy clear should reset baseline_batched"
@@ -1517,7 +1534,7 @@ mod tests {
         assert_ne!(chain.has_baseline(ALICE).unwrap(), Some(true));
 
         // cycle2: re-propose enrollment, settle, gate into daily.
-        run_auto_earn_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
+        run_settlement_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
         assert_eq!(chain.has_baseline(ALICE).unwrap(), Some(true));
         let claims: Vec<u64> = chain
             .ops()
@@ -1579,7 +1596,7 @@ mod tests {
         // Cycle 1: epoch day1 is already Finalized — must not blind-fire
         // proposeBatch(day1, ...), and auto_warp must advance chain time past
         // day1's midnight so the next cycle sees a fresh epoch.
-        run_auto_earn_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
+        run_settlement_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
 
         let new_day1_proposes = chain.ops()[ops_before..]
             .iter()
@@ -1604,7 +1621,7 @@ mod tests {
         );
 
         // Cycle 2: epoch has rolled to day2 (status None) — must propose fresh.
-        run_auto_earn_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
+        run_settlement_cycle(&chain, &fah, &mut reg, BOND, &evidence, &state, true, true).unwrap();
         let day2_proposed = chain.ops().iter().any(|op| {
             matches!(
                 op,

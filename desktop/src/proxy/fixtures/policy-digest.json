@@ -1,0 +1,6 @@
+{
+  "schema_id": "GOAT_PROXY_POLICY_DIGEST_V1",
+  "policy_version": 1,
+  "policy_digest": "fad904a91c2c646dc8cb581036108c89f635e9e5766d9854688594ba52b9316c",
+  "allowlist_digest": "cdc468e1fc6073b2045b0369827c8cf34715f697c15a8266a5b85f9837030629"
+}
