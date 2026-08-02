@@ -1001,12 +1001,105 @@ function Get-NodeChainId {
 # logical-line folder and the Solidity signature canonicaliser each exist exactly
 # once, so there is no second copy for CI to drift from.
 
+# THE PINS THAT *ARE* IN THIS FILE ARE DUPLICATED IN GITHUB ACTIONS, and unlike
+# steps 8-10 they cannot be de-duplicated: CI runs on a GitHub worker with no
+# access to this script, so the number has to exist in both places. The
+# migration-freeze table hit the same wall and answered it the same way -- keep
+# both copies, and assert they agree.
+#
+# The cost of NOT asserting it was measured: `$ExpectedForgeTests` went
+# 248 -> 301 -> 305 -> 315 and `$ExpectedNodeParityTests` 10 -> 18 across three
+# sessions of proxy-lane work while `.github/workflows/contracts.yml` kept 248
+# and 10. This gate reported PASS 10/10 each time and the `contracts` workflow
+# was red on every push, because a green gate here said nothing whatsoever about
+# the workflow. `contracts.yml` even carried the instruction ("keep them equal
+# ... if the two disagree, one of them is lying") -- advisory text in a comment
+# is not a check.
+#
+# The aux-script pin is NOT an equality: CI sweeps the EXPORTED tree and this
+# gate sweeps the internal one, so the two numbers are legitimately different.
+# What is checkable is the CI number against the curator's own record of what
+# gets exported, which is the invariant that actually broke there.
+#
+# Every read below is vacuity-guarded. A renamed variable or a reformatted YAML
+# line makes the regex miss, and a missed regex must be a failure -- a check
+# that silently finds nothing is the exact defect this function exists to catch.
+function Assert-CiPinsMatch {
+    param([string]$RepoRoot)
+
+    $contractsYml = Join-Path $RepoRoot '.github\workflows\contracts.yml'
+    $ciYml        = Join-Path $RepoRoot '.github\workflows\ci.yml'
+    $baseline     = Join-Path $RepoRoot 'tools\export-baseline.txt'
+    foreach ($f in @($contractsYml, $ciYml, $baseline)) {
+        if (-not (Test-Path $f)) {
+            Fail-Step -Name 'CI pin agreement' -Reason "$f is missing, so the pins cannot be compared"
+        }
+    }
+
+    $contractsText = Get-Content $contractsYml -Raw
+    $ciText        = Get-Content $ciYml -Raw
+
+    # (label, regex, source text, expected value)
+    $checks = @(
+        @{ Label = 'EXPECTED_FORGE_TESTS';       Pattern = 'EXPECTED_FORGE_TESTS:\s*"(\d+)"';       Text = $contractsText; Expect = $ExpectedForgeTests;      Mine = '$ExpectedForgeTests' }
+        @{ Label = 'EXPECTED_NODE_PARITY_TESTS'; Pattern = 'EXPECTED_NODE_PARITY_TESTS:\s*"(\d+)"'; Text = $contractsText; Expect = $ExpectedNodeParityTests; Mine = '$ExpectedNodeParityTests' }
+    )
+
+    foreach ($c in $checks) {
+        $m = [regex]::Match($c.Text, $c.Pattern)
+        if (-not $m.Success) {
+            Fail-Step -Name 'CI pin agreement' -Reason (
+                "could not find $($c.Label) in contracts.yml -- the pattern found NOTHING, which " +
+                "is a broken check, not a passing one. If the variable was renamed, rename it here too.")
+        }
+        $ciValue = [int]$m.Groups[1].Value
+        if ($ciValue -ne $c.Expect) {
+            Fail-Step -Name 'CI pin agreement' -Reason (
+                "$($c.Label) is $ciValue in .github/workflows/contracts.yml but $($c.Mine) is " +
+                "$($c.Expect) here. One of them is lying. Bump BOTH in the commit that changes " +
+                "the suite size -- a green gate with a stale workflow pin means CI is red and " +
+                "this script cannot see it.")
+        }
+    }
+
+    # The exported .ps1 count CI pins, against the curator's publication record.
+    $m = [regex]::Match($ciText, '\$expectedScripts\s*=\s*(\d+)')
+    if (-not $m.Success) {
+        Fail-Step -Name 'CI pin agreement' -Reason (
+            'could not find $expectedScripts in ci.yml -- the pattern found NOTHING, which is a ' +
+            'broken check, not a passing one.')
+    }
+    $ciScripts = [int]$m.Groups[1].Value
+    $published = @(Get-Content $baseline |
+        Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() -like '*.ps1' }).Count
+    if ($published -lt 5) {
+        Fail-Step -Name 'CI pin agreement' -Reason (
+            "vacuity guard: only $published .ps1 row(s) read from the export baseline; the reader " +
+            'is broken, and a comparison against a number it did not really read proves nothing.')
+    }
+    if ($ciScripts -ne $published) {
+        Fail-Step -Name 'CI pin agreement' -Reason (
+            "ci.yml pins `$expectedScripts = $ciScripts but tools/export-baseline.txt publishes " +
+            "$published .ps1 file(s). CI sweeps the exported tree, so it will sweep $published and " +
+            'fail. Bump the pin in the commit that publishes or withdraws a script.')
+    }
+
+    Add-StepResult -Name 'CI pin agreement' -Status 'PASS' -Detail (
+        "forge $ExpectedForgeTests, node $ExpectedNodeParityTests, exported .ps1 $published")
+    Write-Host "CI pins agree: forge $ExpectedForgeTests, node parity $ExpectedNodeParityTests, exported .ps1 $published"
+}
+
 $overallStart = Get-Date
 
 try {
     Write-Banner 'goat-attestor full gate'
     Write-Host "attestor : $AttestorDir"
     Write-Host "contracts: $ContractsDir"
+
+    # PREFLIGHT, before any test runs: a pin disagreement is knowable in
+    # milliseconds and invalidates the whole run's meaning, so it must not wait
+    # behind ten minutes of tests that were going to pass anyway.
+    Assert-CiPinsMatch -RepoRoot (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
     # -----------------------------------------------------------------------
     # STEP 1 -- cargo test --lib

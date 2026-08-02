@@ -95,9 +95,30 @@ export function getNetwork(chainId) {
 }
 
 /// Raw deployment JSON for a chain (addresses as decimal-string / hex /
-/// null — not yet BigInt-parsed). Base Sepolia stays all-null until testnet-up.
+/// null — not yet BigInt-parsed). Base Sepolia carried all-null placeholders
+/// until the pilot deployment filled them in; both chains are populated now.
 export function getDeployment(chainId) {
   return DEPLOYMENTS[Number(chainId)] ?? null;
+}
+
+/**
+ * True only when every **core** free-market contract address on `deployment` is
+ * a usable address. Ignores factory/epoch placeholders and `note` / numeric
+ * metadata. Null, empty string, bare `0x` and the zero address all count as not
+ * deployed.
+ *
+ * Exported separately from {@link isDeployed} so the REJECTION branch stays
+ * testable. `isDeployed` reads a module-level map, so once every chain in that
+ * map is really deployed the only reachable negative is "unknown chain id" —
+ * the four conditions below would go uncovered while the suite stayed green.
+ * That is what happened when the pilot populated 84532.
+ */
+export function hasCoreAddresses(deployment) {
+  if (!deployment) return false;
+  return CORE_DEPLOYMENT_KEYS.every((k) => {
+    const v = deployment[k];
+    return typeof v === "string" && v.length > 0 && v !== "0x" && !/^0x0{40}$/i.test(v);
+  });
 }
 
 /**
@@ -106,10 +127,5 @@ export function getDeployment(chainId) {
  * Null, empty string, and missing keys all count as not deployed.
  */
 export function isDeployed(chainId) {
-  const d = getDeployment(chainId);
-  if (!d) return false;
-  return CORE_DEPLOYMENT_KEYS.every((k) => {
-    const v = d[k];
-    return typeof v === "string" && v.length > 0 && v !== "0x" && !/^0x0{40}$/i.test(v);
-  });
+  return hasCoreAddresses(getDeployment(chainId));
 }

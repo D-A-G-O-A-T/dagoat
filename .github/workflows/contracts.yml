@@ -46,9 +46,15 @@ on:
     paths: ["contracts/**", ".github/workflows/contracts.yml"]
 
 env:
-  # Keep in lockstep with run-full-gate.ps1's $Expected* pins.
-  EXPECTED_FORGE_TESTS: "248"
-  EXPECTED_NODE_PARITY_TESTS: "10"
+  # Keep in lockstep with run-full-gate.ps1's $Expected* pins. That instruction
+  # was advisory and was not followed: the gate's pins were bumped three times
+  # for the proxy lane (248 -> 301 -> 305 -> 315, 10 -> 18) and these two were
+  # left behind, so the local gate reported PASS while `contracts` was red. The
+  # gate now READS these two values and fails when they disagree -- see
+  # `Assert-CiPinsMatch` in run-full-gate.ps1. Both sides still have to be
+  # edited by hand; only the drift is now impossible to miss.
+  EXPECTED_FORGE_TESTS: "315"
+  EXPECTED_NODE_PARITY_TESTS: "18"
   # EIP-170 deployed-code cap. GoatRelayGateway was 33,914 bytes once; the
   # refactor into libraries brought it to 12,944. Nothing but an assertion keeps
   # it there.

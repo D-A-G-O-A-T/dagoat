@@ -3,6 +3,7 @@ import {
   CORE_DEPLOYMENT_KEYS,
   DEFAULT_NETWORK_ID,
   getDeployment,
+  hasCoreAddresses,
   isDeployed,
   resolveDefaultNetworkId,
   resolveHideAnvil,
@@ -23,11 +24,18 @@ describe("addresses (Stream B merge)", () => {
     expect(isDeployed(31337)).toBe(true);
   });
 
-  it("84532 is not deployed while placeholders are null", () => {
+  it("84532 carries the pilot deployment and reads as deployed", () => {
     const d = getDeployment(84532);
     expect(d).toBeTruthy();
     expect(d.chainId).toBe(84532);
-    expect(isDeployed(84532)).toBe(false);
+    // This asserted `false` while the file held null placeholders. The pilot
+    // deployment filled them in and the assertion was not updated with it, so
+    // the `desktop` job was red for two pushes. The DATA is authoritative here:
+    // the addresses are real, so the chain is deployed.
+    expect(isDeployed(84532)).toBe(true);
+    for (const k of CORE_DEPLOYMENT_KEYS) {
+      expect(d[k]).toMatch(/^0x[0-9a-f]{40}$/i);
+    }
   });
 
   it("isDeployed requires all core keys", () => {
@@ -43,9 +51,32 @@ describe("addresses (Stream B merge)", () => {
     );
   });
 
-  it("isDeployed rejects zero address / unknown chain", () => {
-    expect(isDeployed(84532)).toBe(false);
+  it("isDeployed rejects an unknown chain", () => {
     expect(isDeployed(99999)).toBe(false);
+  });
+
+  // Every chain in the module-level map is really deployed now, so `isDeployed`
+  // can no longer reach its own rejection branch and these four conditions
+  // would sit uncovered behind a green suite. `hasCoreAddresses` takes the
+  // deployment directly so each one is exercised against a real shape.
+  it("hasCoreAddresses rejects null, empty, bare 0x and the zero address", () => {
+    const good = getDeployment(84532);
+    // CONTROL: the unmutated fixture must pass, or every case below passes for
+    // the wrong reason.
+    expect(hasCoreAddresses(good)).toBe(true);
+
+    for (const bad of [null, undefined, "", "0x", "0x" + "0".repeat(40), 12345]) {
+      for (const k of CORE_DEPLOYMENT_KEYS) {
+        expect(hasCoreAddresses({ ...good, [k]: bad })).toBe(false);
+      }
+    }
+    expect(hasCoreAddresses(null)).toBe(false);
+    // A missing key, as distinct from a null one.
+    for (const k of CORE_DEPLOYMENT_KEYS) {
+      const missing = { ...good };
+      delete missing[k];
+      expect(hasCoreAddresses(missing)).toBe(false);
+    }
   });
 });
 

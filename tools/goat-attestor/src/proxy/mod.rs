@@ -53,10 +53,14 @@ pub mod fraud;
 /// `#[cfg(test)]` and private, like the two crate-root audit modules
 /// (`citation_audit` and its publication-consistency sibling): it ships no
 /// runtime behaviour, only the four sweeps and their controls, so compiling it
-/// into the binary would be dead symbols. It is
-/// deliberately absent from `tools/export-baseline.txt` for the same reason,
-/// and `every_new_proxy_lane_file_is_in_the_export_baseline` asserts that
-/// absence rather than leaving it to habit.
+/// into the binary would be dead symbols.
+///
+/// It IS in `tools/export-baseline.txt`, exactly as those two siblings are, and
+/// `every_new_proxy_lane_file_is_in_the_export_baseline` asserts that presence.
+/// This declaration is the reason: `mod.rs` is published, so a published tree
+/// without `lane_audit.rs` declares a module whose file does not exist and
+/// fails to compile with `E0583`. Being `#[cfg(test)]` does not help — `cargo
+/// fmt`, `cargo clippy --all-targets` and `cargo test` all resolve it.
 #[cfg(test)]
 mod lane_audit;
 pub mod meter;

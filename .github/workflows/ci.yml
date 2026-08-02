@@ -718,7 +718,13 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $repo = $env:GITHUB_WORKSPACE
           $contracts = Join-Path $repo 'contracts'
-          $expectedScripts = 14
+          # The EXPORTED .ps1 count, which is not the internal one: the local
+          # gate sweeps the private tree and pins a different, larger number.
+          # 14 -> 16 when the Base Sepolia pilot published `check-deployed.ps1`
+          # and `launch-base-sepolia.ps1`; this pin was not bumped with them, so
+          # `aux-scripts` was already red before the proxy lane landed and stayed
+          # red for the same reason afterwards.
+          $expectedScripts = 16
           $checks = @(
             @{ Name = 'check8'; Label = 'aux script integrity';   Switch = '-Skip9' },
             @{ Name = 'check9'; Label = 'script ABI consistency'; Switch = '-Skip8' }

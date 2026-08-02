@@ -91,6 +91,14 @@ pub mod policy;
 pub mod resolve;
 pub mod robots;
 pub mod supervisor;
+/// Crate-source sweeps (INV-5, INV-19, vocabulary law). `#[cfg(test)]` bodies
+/// only, so nothing here reaches a release binary.
+///
+/// The FILE is published, and this declaration is why: `lib.rs` is published,
+/// and a published tree carrying this line without `vocabulary_audit.rs` does
+/// not compile — `cargo fmt` refuses to resolve the module before any test
+/// runs. Withholding a test-only file from the export does not keep it off the
+/// public surface; it breaks the public build.
 mod vocabulary_audit;
 
 use std::path::Path;
