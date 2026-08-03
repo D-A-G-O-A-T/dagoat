@@ -856,8 +856,20 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Install
         run: npm ci
-      - name: test
-        run: npm test
+      - name: test (count pinned)
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee desktop-test.log
+          passed=$(grep -oE '[0-9]+ passed' desktop-test.log | tail -n 1 | grep -oE '[0-9]+')
+          if [ -z "${passed}" ]; then
+            echo "::error::could not parse 'passed' count from vitest run"
+            exit 1
+          fi
+          echo "desktop suite passed=${passed} (expected at least 676)"
+          if [ "${passed}" -lt 676 ]; then
+            echo "::error::desktop suite ran ${passed} test(s), expected at least 676 -- a drop here indicates silent test deletion"
+            exit 1
+          fi
 
       # ---- Tauri Rust shell -------------------------------------------------
       # Until 2026-07-31 nothing in CI compiled `desktop/src-tauri` — `grep -c tauri`
