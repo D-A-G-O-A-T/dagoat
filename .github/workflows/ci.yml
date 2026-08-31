@@ -491,7 +491,14 @@ jobs:
       # pin was never communicated to the action at all. Foundry v1.7.1 does exist
       # (published 2026-05-08, the same build the dev machine reports), and the
       # `version:` input is how you ask for it.
-      - uses: foundry-rs/foundry-toolchain@v1.7.0
+      # BUMPED v1.7.0 -> v1.9.1. At v1.7.0 the action invoked `foundryup` through
+      # `bash`, and Foundry has since replaced that shell script with a compiled
+      # binary (foundry-toolchain PR #152, "feat: use foundryup installer repo"),
+      # so the old tag dies with:
+      #     /home/runner/.foundry/bin/foundryup: cannot execute binary file
+      # v1.9.1 is the current release (published 2026-07-28). `version:` is
+      # UNCHANGED and still names the Foundry release, not the action tag.
+      - uses: foundry-rs/foundry-toolchain@v1.9.1
         with:
           version: v1.7.1
       - name: Cache cargo
@@ -582,9 +589,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # `@v1.7.0` is the ACTION tag; `version:` is the Foundry release. See the
+      # `@v1.9.1` is the ACTION tag; `version:` is the Foundry release. See the
       # note in `goat-attestor-anvil` -- `@v1.7.1` is not a tag that exists.
-      - uses: foundry-rs/foundry-toolchain@v1.7.0
+      # BUMPED v1.7.0 -> v1.9.1. At v1.7.0 the action invoked `foundryup` through
+      # `bash`, and Foundry has since replaced that shell script with a compiled
+      # binary (foundry-toolchain PR #152, "feat: use foundryup installer repo"),
+      # so the old tag dies with:
+      #     /home/runner/.foundry/bin/foundryup: cannot execute binary file
+      # v1.9.1 is the current release (published 2026-07-28). `version:` is
+      # UNCHANGED and still names the Foundry release, not the action tag.
+      - uses: foundry-rs/foundry-toolchain@v1.9.1
         with:
           version: v1.7.1
       - name: Build the ABI universe

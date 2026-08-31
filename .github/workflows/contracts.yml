@@ -84,7 +84,14 @@ jobs:
       # push. Corrected 2026-07-29: `@v1.7.0` is the action, `version: v1.7.1` is
       # the Foundry release, which is what the sentence above was always asking
       # for.
-      - uses: foundry-rs/foundry-toolchain@v1.7.0
+      # BUMPED v1.7.0 -> v1.9.1. At v1.7.0 the action invoked `foundryup` through
+      # `bash`, and Foundry has since replaced that shell script with a compiled
+      # binary (foundry-toolchain PR #152, "feat: use foundryup installer repo"),
+      # so the old tag dies with:
+      #     /home/runner/.foundry/bin/foundryup: cannot execute binary file
+      # v1.9.1 is the current release (published 2026-07-28). `version:` is
+      # UNCHANGED and still names the Foundry release, not the action tag.
+      - uses: foundry-rs/foundry-toolchain@v1.9.1
         with:
           version: v1.7.1
 
