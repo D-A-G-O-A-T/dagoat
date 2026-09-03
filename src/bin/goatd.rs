@@ -275,8 +275,16 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
     if !bytes.len().is_multiple_of(2) {
         return None;
     }
+    // `as_chunks::<2>().0` yields only the whole 2-byte chunks and drops any
+    // remainder — the same behaviour as the `chunks_exact(2)` it replaces. The
+    // two are interchangeable *here* because the odd-length guard immediately
+    // above has already proved the remainder is empty. Do not restore
+    // `chunks_exact`: clippy 1.98+ denies it for a constant chunk size
+    // (`chunks_exact_to_as_chunks`) and CI runs a floating stable toolchain.
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| Some((hex_val(c[0])? << 4) | hex_val(c[1])?))
         .collect()
 }
@@ -2533,5 +2541,61 @@ mod tests {
         let batch2 = seed.process(&secure, node1);
         assert!(batch2.is_empty());
         assert_eq!(seed.node.seen_messages(), seen_before + 1);
+    }
+}
+
+/// Pins `decode_hex`'s contract across the `chunks_exact(2)` -> `as_chunks::<2>()`
+/// rewrite. The two iterators differ on a trailing *partial* chunk — `chunks_exact`
+/// silently drops it, and so does `as_chunks(..).0` — so they are equivalent here
+/// only because the odd-length guard inside `decode_hex` has already proved the
+/// remainder is empty. If that guard is ever moved or removed, these tests fail.
+/// `decode_hex` parses genesis node IDs and ML-DSA-65 public keys, so a silent
+/// truncation here would be a validation hole, not a cosmetic bug.
+#[cfg(test)]
+mod decode_hex_tests {
+    use super::decode_hex;
+
+    #[test]
+    fn even_length_valid_hex_round_trips() {
+        assert_eq!(decode_hex(""), Some(vec![]));
+        assert_eq!(decode_hex("00"), Some(vec![0x00]));
+        assert_eq!(decode_hex("ff"), Some(vec![0xff]));
+        assert_eq!(decode_hex("FF"), Some(vec![0xff]));
+        assert_eq!(decode_hex("deadBEEF"), Some(vec![0xde, 0xad, 0xbe, 0xef]));
+        assert_eq!(
+            decode_hex("0123456789abcdefABCDEF"),
+            Some(vec![
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xab, 0xcd, 0xef
+            ])
+        );
+        // exhaustive: every byte 0x00..=0xff round-trips through its own hex
+        let all: Vec<u8> = (0u16..=255).map(|b| b as u8).collect();
+        let hexed: String = all.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(decode_hex(&hexed), Some(all.clone()));
+        let hexed_up: String = all.iter().map(|b| format!("{b:02X}")).collect();
+        assert_eq!(decode_hex(&hexed_up), Some(all));
+    }
+
+    #[test]
+    fn odd_length_is_none() {
+        for s in ["0", "abc", "deadbee", "f", "12345"] {
+            assert_eq!(decode_hex(s), None, "odd-length {s:?} must be None");
+        }
+    }
+
+    #[test]
+    fn non_hex_is_none() {
+        for s in [
+            "zz",
+            "0g",
+            "g0",
+            "de ad",
+            "0x12",
+            "12-34",
+            "\u{00e9}\u{00e9}",
+            "  ",
+        ] {
+            assert_eq!(decode_hex(s), None, "non-hex {s:?} must be None");
+        }
     }
 }

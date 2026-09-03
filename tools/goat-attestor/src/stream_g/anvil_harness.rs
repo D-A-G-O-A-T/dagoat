@@ -523,14 +523,15 @@ impl AnvilHarness {
             "getTokenConfig returned {} bytes, expected 11 static words",
             bytes.len()
         );
-        bytes
-            .chunks_exact(32)
-            .map(|c| {
-                let mut w = [0u8; 32];
-                w.copy_from_slice(c);
-                w
-            })
-            .collect()
+        // `as_chunks::<32>().0` yields only the whole 32-byte chunks and drops
+        // any remainder — the same behaviour as the `chunks_exact(32)` it
+        // replaces. The two are interchangeable *here* because the assert
+        // immediately above has already proved `len == 32 * 11`, so there is no
+        // remainder. It also hands back `&[[u8; 32]]` rather than `&[u8]`, which
+        // is why the `copy_from_slice` dance collapses into a plain `to_vec`.
+        // Do not restore `chunks_exact`: clippy 1.98+ denies it for a constant
+        // chunk size (`chunks_exact_to_as_chunks`).
+        bytes.as_chunks::<32>().0.to_vec()
     }
 
     /// `FeeTokenRegistry.isTokenAuthorized(token, capability)` at `block` —
