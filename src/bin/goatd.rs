@@ -280,7 +280,9 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
     // two are interchangeable *here* because the odd-length guard immediately
     // above has already proved the remainder is empty. Do not restore
     // `chunks_exact`: clippy 1.98+ denies it for a constant chunk size
-    // (`chunks_exact_to_as_chunks`) and CI runs a floating stable toolchain.
+    // (`chunks_exact_to_as_chunks`). The toolchain is pinned in
+    // `rust-toolchain.toml` and in `ci.yml`, so this will not resurface by a
+    // compiler roll-forward — but the rewrite stands on its own merits.
     bytes
         .as_chunks::<2>()
         .0

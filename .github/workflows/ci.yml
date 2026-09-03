@@ -134,7 +134,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # TOOLCHAIN PINNED DELIBERATELY -- this is the authoritative note; every
+      # other line selecting this action is the same decision and carries no
+      # comment of its own.
+      #
+      # WHY. On 2026-09-02 two jobs went red with NO code change: the floating
+      # channel had rolled to rustc 1.98.0 (88d9e12ae 2026-08-18) and clippy
+      # 1.98's new `chunks_exact_to_as_chunks` lint denied untouched code under
+      # the `-D warnings` gates. A moving channel can turn this workflow red on
+      # any morning without a commit.
+      #
+      # THE PIN HAS TWO HALVES. This action selects its toolchain from its own
+      # `@rev` and does NOT read `rust-toolchain.toml`; that file governs local
+      # `cargo` instead. Both are needed, they name the same version, and
+      # changing one alone silently restores the drift -- because each side
+      # still reports success on its own compiler. Bump them together.
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
       - name: Cache cargo
@@ -166,7 +181,7 @@ jobs:
     # MTU-chunking (O4): baseline triage was clean (0 advisories on locked graph) → hard-fail.
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: cargo audit (hard-fail)
@@ -182,7 +197,7 @@ jobs:
         working-directory: goatcoin-rs
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - name: test goatcoin-rs
         run: cargo test --workspace
 
@@ -236,7 +251,7 @@ jobs:
         working-directory: tools/goat-attestor
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy
       - name: Cache cargo
@@ -363,7 +378,7 @@ jobs:
         working-directory: tools/goat-proxy-tunnel
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy, rustfmt
       - name: Cache cargo
@@ -414,7 +429,7 @@ jobs:
         working-directory: tools/goat-proxy-worker
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy, rustfmt
       - name: Cache cargo
@@ -475,7 +490,7 @@ jobs:
         working-directory: tools/goat-attestor
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       # Pinned to the exact release the harness's documented behaviour was
       # verified against (anvil/forge/cast 1.7.1, commit 4072e487). Anvil's
       # cheatcode surface --- anvil_setCode, anvil_setStorageAt, the
@@ -915,7 +930,7 @@ jobs:
       #      packaging concern, not a type-checking one. Do not add it.
       #   3. NOT rc.exe. `tauri-winres` is Windows-only and never runs on this
       #      runner; a local rc.exe failure says nothing about this job.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache cargo (src-tauri)
         uses: Swatinem/rust-cache@v2
         with:

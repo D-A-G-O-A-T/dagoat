@@ -1,0 +1,51 @@
+# =============================================================================
+# PINNED RUST TOOLCHAIN -- READ THIS BEFORE CHANGING THE VERSION BELOW.
+#
+# WHAT BROKE, 2026-09-02. Two CI jobs went red with NO code change. The tree was
+# identical to a green run; what moved was the compiler. GitHub's
+# `dtolnay/rust-toolchain@stable` had rolled forward to
+# rustc 1.98.0 (88d9e12ae 2026-08-18), and clippy 1.98 added the
+# `chunks_exact_to_as_chunks` lint, which denied long-standing, untouched code
+# under the `-D warnings` clippy gates -- this workflow runs 9 of them, plus 5
+# `cargo fmt --all -- --check` gates, so a single new lint has a wide blast
+# radius here.
+#
+# WHY NOBODY SAW IT COMING. The development machine was on
+# rustc 1.96.1 (31fca3adb 2026-06-26). `stable` locally and `stable` in CI were
+# TWO MINOR VERSIONS APART and both called themselves "stable" -- so a green
+# local Gate A said much less about CI than it appeared to. It was a different
+# compiler with a different lint set, and nothing in either output named the
+# discrepancy. That silence is the actual defect this file closes.
+#
+# WHAT THIS FILE DOES. rustup searches UPWARD from the current directory for a
+# toolchain file, so this one at the repository root governs every crate beneath
+# it from a single line -- the root spine, `goatcoin-rs/`,
+# `tools/goat-attestor/`, the four `tools/goat-proxy-*/` crates and
+# `desktop/src-tauri/`. Those are separate workspaces; the search is by
+# directory, not by workspace, so they are all covered.
+#
+# WHAT THIS FILE DOES NOT DO -- AND IT IS HALF THE FIX. It does not pin CI.
+# `dtolnay/rust-toolchain` selects its toolchain from the action's own `@rev`
+# and does not read this file, so `.github/workflows/ci.yml` pins `@1.98.0` on
+# every one of its `uses:` lines. THE TWO ARE ONE DECISION IN TWO PLACES AND MUST
+# BE CHANGED TOGETHER. Editing either alone silently restores the drift.
+#
+# BUMPING THIS IS A DELIBERATE ACT, NOT A CHORE. A new channel value is a new
+# lint set, and the failure mode is exactly the one above: red CI on code nobody
+# touched. Bump it only with a full `tools/run-gate-a.ps1` run on the new
+# compiler, and with the matching `ci.yml` edit in the SAME commit. Never as a
+# drive-by, and never to make one failing lint disappear.
+#
+# `profile = "minimal"` was checked, not assumed: no job in `ci.yml` runs
+# `cargo doc`, `rust-src`, miri, a `--target`, or a nightly toolchain, and the
+# only components any job requests are clippy and rustfmt -- both listed
+# explicitly below, because a minimal profile omits them. If an editor wants
+# standard-library sources, add them per developer with
+# `rustup component add rust-src` rather than widening the profile for the
+# whole project to suit one machine's tooling.
+# =============================================================================
+
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
